@@ -118,6 +118,14 @@ def _like_term(term: str) -> str:
     - ``'`` → ``''`` (standard SQL escaping) so terms like ``"St Mary's"``
       produce a balanced, valid ``LIKE`` pattern rather than broken SQL that the
       ArcGIS server rejects with a 400.
+
+    The backslash replacement runs first so the escape pairs added afterwards for
+    percent and underscore are not themselves doubled. With the ``ESCAPE`` clause
+    active, a doubled backslash in the pattern denotes ONE literal backslash in
+    the data — so a single-backslash search term correctly matches a
+    single-backslash name (and does not over-match a two-backslash name). This is
+    verified against a real SQL engine and the live HES API by the
+    self-consistency tests in ``tests/test_tools.py``.
     """
     escaped = (
         term.strip()

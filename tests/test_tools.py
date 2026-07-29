@@ -487,6 +487,95 @@ async def test_search_with_percent_builds_escaped_where(monkeypatch):
     assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%100\\%%' ESCAPE '\\'"
 
 
+# -- LIKE escaping: parametrized + self-consistency (backslash correctness) ---
+
+# One literal backslash, built via chr() to avoid any source-level ambiguity
+# about Python string escapes (e.g. "a\\b" vs a raw tab from "a\tb").
+_BS = chr(92)
+
+
+@pytest.mark.parametrize(
+    "term,expected_pattern",
+    [
+        # Plain text is just uppercased and wrapped in %...%.
+        ("castle", "'%CASTLE%'"),
+        # Literal % and _ are backslash-escaped so they match literally.
+        ("100%", "'%100\\%%'"),
+        ("a_b", "'%A\\_B%'"),
+        # Apostrophe is doubled (standard SQL literal escaping).
+        ("St Mary's", "'%ST MARY''S%'"),
+        # ONE literal backslash becomes the escaped pair \\ — which, under
+        # ESCAPE '\', denotes exactly one literal backslash in the data.
+        ("a" + _BS + "b", "'%A" + _BS + _BS + "B%'"),
+        # Two literal backslashes become four (each one doubled).
+        ("a" + _BS + _BS + "b", "'%A" + _BS + _BS + _BS + _BS + "B%'"),
+        # Backslash-then-percent: backslash doubled first, then % escaped,
+        # so neither the added backslashes nor the % is mis-handled.
+        ("a" + _BS + "%b", "'%A" + _BS + _BS + "\\%B%'"),
+    ],
+)
+def test_like_term_escaping_parametrized(term, expected_pattern):
+    assert _like_term(term) == expected_pattern
+
+
+def _sqlite_matches(clause: str, rows: list[str]) -> list[str]:
+    """Return which of ``rows`` satisfy ``clause`` (a full WHERE predicate).
+
+    Uses a real SQL engine (sqlite) executing the clause INLINE — exactly as the
+    ArcGIS server receives it — so SQL-literal escaping ('' → ') and the LIKE
+    ESCAPE mechanism are both honoured the way the live server applies them.
+    """
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    cur = con.cursor()
+    cur.execute("CREATE TABLE t (NMRSNAME TEXT)")
+    for r in rows:
+        cur.execute("INSERT INTO t VALUES (?)", (r,))
+    cur.execute("SELECT NMRSNAME FROM t WHERE " + clause)
+    return [row[0] for row in cur.fetchall()]
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "100%",
+        "a_b",
+        "St Mary's",
+        "a" + _BS + "b",          # one literal backslash
+        "a" + _BS + _BS + "b",    # two literal backslashes
+        "a" + _BS + "%b",         # backslash immediately followed by percent
+    ],
+)
+def test_like_escaping_is_self_consistent(term):
+    """The pattern _like_term builds, interpreted with ESCAPE '\\', must match the
+    literal term (uppercased) and must NOT match a near-miss neighbour.
+
+    This is the regression guard for the backslash bug: a single-backslash term
+    must match a single-backslash name and must not over-match a two-backslash
+    name (or vice-versa).
+    """
+    target = term.strip().upper()
+    # A neighbour that differs only in backslash count / a wildcard char, to
+    # prove the escaping is exact rather than accidentally permissive.
+    neighbours = {
+        "100%": "100",
+        "a_b": "AXB",  # an unescaped _ would match any single char (AXB)
+        "St Mary's": "ST MARYXS",
+        "a" + _BS + "b": "A" + _BS + _BS + "B",          # 2 backslashes
+        "a" + _BS + _BS + "b": "A" + _BS + "B",          # 1 backslash
+        "a" + _BS + "%b": "A" + _BS + "XB",              # % as wildcard would match
+    }
+    neighbour = neighbours[term]
+    clause = _like_clause("NMRSNAME", term)
+    matched = _sqlite_matches(clause, [target, neighbour])
+    assert target in matched, f"{clause!r} should match literal {target!r}"
+    assert neighbour not in matched, (
+        f"{clause!r} must not match near-miss {neighbour!r} "
+        f"(escaping is too permissive)"
+    )
+
+
 # -- empty/whitespace term guard (FIX 3) -----------------------------------
 
 
