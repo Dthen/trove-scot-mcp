@@ -92,18 +92,51 @@ _client = HesClient()
 # ---------------------------------------------------------------------------
 
 
+# Suffix appended to every ``LIKE`` clause so the backslash is treated as the
+# escape character. Without it, the ``\%``/``\_`` sequences that ``_like_term``
+# emits would be read as a literal backslash followed by a wildcard, which is
+# wrong. Verified against the live ArcGIS API: with ``ESCAPE '\'`` a search for
+# ``100%`` matches only records literally containing "100%", and ``a_b`` matches
+# only a literal underscore (the bracket form ``[%]``/``[_]`` proved unreliable
+# on this server, returning inconsistent counts).
+_LIKE_ESCAPE_SUFFIX = " ESCAPE '\\'"
+
+
 def _like_term(term: str) -> str:
     """Uppercase a search term and wrap it as a SQL ``LIKE`` wildcard pattern.
 
     Canmore text data is stored in UPPERCASE and ``LIKE`` is case-sensitive, so
     the pattern must be uppercased to match. ``"castle"`` → ``"'%CASTLE%'"``.
 
-    Embedded single quotes are escaped by doubling them (standard SQL escaping)
-    so terms like ``"St Mary's"`` produce a balanced, valid ``LIKE`` pattern
-    rather than broken SQL that the ArcGIS server rejects with a 400.
+    Escaping (all literal, so user input can never inject a wildcard or break
+    the SQL):
+    - ``\\`` → ``\\\\`` first, so the backslashes we add below aren't doubled.
+    - ``%`` → ``\\%`` and ``_`` → ``\\_`` so a literal percent/underscore in the
+      term matches literally instead of acting as a SQL wildcard (paired with
+      ``_LIKE_ESCAPE_SUFFIX`` on the clause). Without this, ``"100%"`` matched
+      every record containing "100".
+    - ``'`` → ``''`` (standard SQL escaping) so terms like ``"St Mary's"``
+      produce a balanced, valid ``LIKE`` pattern rather than broken SQL that the
+      ArcGIS server rejects with a 400.
     """
-    escaped = term.strip().upper().replace("'", "''")
+    escaped = (
+        term.strip()
+        .upper()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+        .replace("'", "''")
+    )
     return f"'%{escaped}%'"
+
+
+def _like_clause(column: str, term: str) -> str:
+    """Build a full ``UPPER(column) LIKE '%TERM%' ESCAPE '\\'`` clause.
+
+    Centralises the column-wrapping, pattern building, and the ``ESCAPE`` suffix
+    so every text filter escapes user-supplied wildcards consistently.
+    """
+    return f"UPPER({column}) LIKE {_like_term(term)}{_LIKE_ESCAPE_SUFFIX}"
 
 
 def _build_where(
@@ -124,13 +157,13 @@ def _build_where(
     """
     clauses: list[str] = []
     if term:
-        clauses.append(f"UPPER(NMRSNAME) LIKE {_like_term(term)}")
+        clauses.append(_like_clause("NMRSNAME", term))
     if sitetype:
-        clauses.append(f"UPPER(SITETYPE) LIKE {_like_term(sitetype)}")
+        clauses.append(_like_clause("SITETYPE", sitetype))
     if council:
-        clauses.append(f"UPPER(COUNCIL) LIKE {_like_term(council)}")
+        clauses.append(_like_clause("COUNCIL", council))
     if broadclass:
-        clauses.append(f"UPPER(BROADCLASS) LIKE {_like_term(broadclass)}")
+        clauses.append(_like_clause("BROADCLASS", broadclass))
     return " AND ".join(clauses) if clauses else "1=1"
 
 
@@ -301,17 +334,20 @@ async def heritage_near(
         term: Optional name text to filter results by (substring match).
         limit: Maximum number of sites to return (default 50).
 
-    Returns an object with ``count`` (sites returned), ``total_found`` (total
-    geocoded matches before truncation), ``truncated`` (True when more matched
-    than could be returned), an optional ``note`` explaining truncation, and
-    ``sites`` — up to ``limit`` sites sorted nearest-first, each with a
-    ``distance_km`` field plus name, type, council, grid reference, lat/lon, and
-    trove.scot URL. Returns an ``Error:`` string on failure.
+    Returns an object with ``count`` (sites returned), ``total_found`` (the true
+    number of matches within the area, from a count query), ``truncated`` (True
+    when more matched than could be returned), an optional ``note`` explaining
+    truncation, and ``sites`` — up to ``limit`` sites sorted nearest-first, each
+    with a ``distance_km`` field plus name, type, council, grid reference,
+    lat/lon, and trove.scot URL. Returns an ``Error:`` string on bad input or
+    failure.
     """
     try:
         lat = float(lat)
         lon = float(lon)
         radius_km = float(radius_km)
+        if radius_km <= 0:
+            return "Error: radius_km must be a positive number"
 
         # Rough degree deltas for a square envelope around the point. One degree
         # of latitude ≈ 111 km; longitude degrees shrink with cos(latitude).
@@ -325,7 +361,28 @@ async def heritage_near(
             f"{lon + lon_delta},{lat + lat_delta}"
         )
 
-        where = f"UPPER(NMRSNAME) LIKE {_like_term(term)}" if term else "1=1"
+        where = _like_clause("NMRSNAME", term) if term else "1=1"
+
+        # Count first (same where + geometry) to learn the TRUE number of matches
+        # in the area. The fetch below silently caps at CANMORE_ROW_CAP, so
+        # len(features) alone can't tell "exactly 1000" from "capped at 1000".
+        count_data = await _client.query(
+            CANMORE_LAYER,
+            where,
+            count_only=True,
+            geometry=envelope,
+            geometry_type="esriGeometryEnvelope",
+            in_sr=4326,
+        )
+        total_found = int(count_data.get("count", 0))
+        if total_found == 0:
+            return {
+                "count": 0,
+                "total_found": 0,
+                "truncated": False,
+                "sites": [],
+            }
+
         features = await _client.fetch_features(
             CANMORE_LAYER,
             where,
@@ -344,8 +401,7 @@ async def heritage_near(
             f["distance_km"] = round(_haversine_km(lat, lon, f["lat"], f["lon"]), 3)
         geocoded.sort(key=lambda f: f["distance_km"])
 
-        total_found = len(geocoded)
-        truncated = total_found > limit
+        truncated = total_found > CANMORE_ROW_CAP or total_found > limit
         sites = geocoded[:limit]
         out: dict[str, Any] = {
             "count": len(sites),
@@ -354,11 +410,22 @@ async def heritage_near(
             "sites": sites,
         }
         if truncated:
-            out["note"] = (
-                f"{total_found} sites matched within {radius_km} km but only the "
-                f"nearest {len(sites)} were returned (limit={limit}). Raise 'limit' "
-                "to see more."
-            )
+            if total_found > CANMORE_ROW_CAP:
+                out["note"] = (
+                    f"{total_found} sites matched within {radius_km} km but the API "
+                    f"caps a single query at {CANMORE_ROW_CAP} with no pagination, so "
+                    f"only the first {len(sites)} of a {CANMORE_ROW_CAP}-record subset "
+                    "are shown. In dense areas the nearest-first ordering is "
+                    "approximate (nearest within the fetched subset, which may not "
+                    "include the true nearest sites). Narrow the area (smaller radius) "
+                    "or add a term filter for complete results."
+                )
+            else:
+                out["note"] = (
+                    f"{total_found} sites matched within {radius_km} km but only the "
+                    f"nearest {len(sites)} were returned (limit={limit}). Raise 'limit' "
+                    "to see more."
+                )
         return out
     except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
         return f"Error: {e}"
@@ -393,14 +460,14 @@ async def search_listed_buildings(
     try:
         clauses: list[str] = []
         if term:
-            clauses.append(f"UPPER(DES_TITLE) LIKE {_like_term(term)}")
+            clauses.append(_like_clause("DES_TITLE", term))
         if category:
             cat = category.strip().upper()
             if cat not in {"A", "B", "C"}:
                 return "Error: category must be A, B, or C"
             clauses.append(f"CATEGORY = '{cat}'")
         if local_authority:
-            clauses.append(f"UPPER(LOCAL_AUTH) LIKE {_like_term(local_authority)}")
+            clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
         total_found = await _client.count(LISTED_BUILDINGS_LAYER, where)
@@ -469,9 +536,9 @@ async def search_scheduled_monuments(
     try:
         clauses: list[str] = []
         if term:
-            clauses.append(f"UPPER(DES_TITLE) LIKE {_like_term(term)}")
+            clauses.append(_like_clause("DES_TITLE", term))
         if local_authority:
-            clauses.append(f"UPPER(LOCAL_AUTH) LIKE {_like_term(local_authority)}")
+            clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
         total_found = await _client.count(SCHEDULED_MONUMENTS_LAYER, where)
@@ -540,9 +607,9 @@ async def list_properties_in_care(
     try:
         clauses: list[str] = []
         if term:
-            clauses.append(f"UPPER(PIC_NAME) LIKE {_like_term(term)}")
+            clauses.append(_like_clause("PIC_NAME", term))
         if local_authority:
-            clauses.append(f"UPPER(LOCAL_AUTH) LIKE {_like_term(local_authority)}")
+            clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
         total_found = await _client.count(PROPERTIES_IN_CARE_LAYER, where)

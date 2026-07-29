@@ -13,6 +13,7 @@ import trove_scot_mcp.server as server_mod
 from trove_scot_mcp.client import HesClient
 from trove_scot_mcp.server import (
     _build_where,
+    _like_clause,
     _like_term,
     count_heritage,
     get_heritage_by_id,
@@ -67,6 +68,10 @@ def no_sleep(monkeypatch):
 
 # -- pure helpers ----------------------------------------------------------
 
+# Every LIKE clause carries this ESCAPE suffix so user-supplied % / _ match
+# literally (see _like_term / _like_clause in server.py).
+ESC = " ESCAPE '\\'"
+
 
 def test_like_term_uppercases_and_wraps():
     assert _like_term("castle") == "'%CASTLE%'"
@@ -74,7 +79,7 @@ def test_like_term_uppercases_and_wraps():
 
 
 def test_build_where_term_only():
-    assert _build_where("castle") == "UPPER(NMRSNAME) LIKE '%CASTLE%'"
+    assert _build_where("castle") == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
 
 
 def test_build_where_no_args_matches_all():
@@ -86,16 +91,16 @@ def test_build_where_all_filters_anded():
         "castle", sitetype="fort", council="edinburgh", broadclass="defence"
     )
     assert where == (
-        "UPPER(NMRSNAME) LIKE '%CASTLE%' AND "
-        "UPPER(SITETYPE) LIKE '%FORT%' AND "
-        "UPPER(COUNCIL) LIKE '%EDINBURGH%' AND "
-        "UPPER(BROADCLASS) LIKE '%DEFENCE%'"
+        f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC} AND "
+        f"UPPER(SITETYPE) LIKE '%FORT%'{ESC} AND "
+        f"UPPER(COUNCIL) LIKE '%EDINBURGH%'{ESC} AND "
+        f"UPPER(BROADCLASS) LIKE '%DEFENCE%'{ESC}"
     )
 
 
 def test_build_where_filters_without_term():
     where = _build_where(council="fife")
-    assert where == "UPPER(COUNCIL) LIKE '%FIFE%'"
+    assert where == f"UPPER(COUNCIL) LIKE '%FIFE%'{ESC}"
 
 
 # -- search_heritage -------------------------------------------------------
@@ -115,8 +120,8 @@ async def test_search_builds_correct_where(monkeypatch):
 
     # First call is the count, second is the fetch — both carry the same where.
     wheres = [entry["where"] for entry in log]
-    assert wheres[0] == "UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'"
-    assert wheres[1] == "UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'"
+    assert wheres[0] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
+    assert wheres[1] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
     # Count call uses returnCountOnly; fetch call uses named outFields (not *).
     assert log[0]["returnCountOnly"] == "true"
     assert log[1]["outFields"] != "*"
@@ -136,8 +141,8 @@ async def test_search_adds_filters_with_and(monkeypatch):
     )
     await search_heritage("castle", sitetype="fort", council="edinburgh", broadclass="defence")
     expected = (
-        "UPPER(NMRSNAME) LIKE '%CASTLE%' AND UPPER(SITETYPE) LIKE '%FORT%' AND "
-        "UPPER(COUNCIL) LIKE '%EDINBURGH%' AND UPPER(BROADCLASS) LIKE '%DEFENCE%'"
+        f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC} AND UPPER(SITETYPE) LIKE '%FORT%'{ESC} AND "
+        f"UPPER(COUNCIL) LIKE '%EDINBURGH%'{ESC} AND UPPER(BROADCLASS) LIKE '%DEFENCE%'{ESC}"
     )
     assert log[0]["where"] == expected
 
@@ -232,7 +237,7 @@ async def test_count_returns_total_found(monkeypatch):
     )
     result = await count_heritage(term="castle")
     assert log[0]["returnCountOnly"] == "true"
-    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%CASTLE%'"
+    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
     assert result["total_found"] == 7098
     assert "note" in result  # > 1000 cap → warning present
 
@@ -257,6 +262,22 @@ async def test_count_small_result_no_note(monkeypatch):
 # -- heritage_near ---------------------------------------------------------
 
 
+def _near_handler(features, count=None):
+    """Mock handler for heritage_near: count query → count, fetch → features.
+
+    ``count`` defaults to the number of features so the count-first query and
+    the fetch agree.
+    """
+    if count is None:
+        count = len(features)
+    return lambda req: httpx.Response(
+        200,
+        json={"count": count}
+        if req.url.params.get("returnCountOnly") == "true"
+        else {"features": [{"attributes": dict(f)} for f in features]},
+    )
+
+
 async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
     # Two sites: one near Edinburgh (52068) and one far away (Aberdeen-ish BNG).
     far = {
@@ -270,22 +291,17 @@ async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
         "YCOORD": 806000,  # ~57.14, -2.10 (Aberdeen area)
     }
     log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"features": [
-                {"attributes": dict(far)},
-                {"attributes": dict(EDINBURGH_CASTLE)},
-            ]},
-        ),
+        monkeypatch, _near_handler([far, EDINBURGH_CASTLE])
     )
     # Edinburgh Castle lat/lon ≈ 55.95, -3.20.
     result = await heritage_near(55.95, -3.20, radius_km=2.0)
 
-    # Envelope geometry sent as WGS84 with the right type/SR.
-    assert log[0]["geometryType"] == "esriGeometryEnvelope"
-    assert log[0]["inSR"] == "4326"
-    min_lon, min_lat, max_lon, max_lat = (float(x) for x in log[0]["geometry"].split(","))
+    # First call is the count (returnCountOnly), second is the fetch — both carry
+    # the envelope geometry as WGS84 with the right type/SR.
+    assert log[0]["returnCountOnly"] == "true"
+    assert log[1]["geometryType"] == "esriGeometryEnvelope"
+    assert log[1]["inSR"] == "4326"
+    min_lon, min_lat, max_lon, max_lat = (float(x) for x in log[1]["geometry"].split(","))
     assert min_lon < -3.20 < max_lon
     assert min_lat < 55.95 < max_lat
     # ~2km radius → lat delta ≈ 2/111 ≈ 0.018.
@@ -301,12 +317,7 @@ async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
 
 
 async def test_heritage_near_adds_distance_km(monkeypatch):
-    install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200, json={"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}
-        ),
-    )
+    install_mock_client(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
     result = await heritage_near(55.95, -3.20, radius_km=1.0)
     site = result["sites"][0]
     assert "distance_km" in site
@@ -315,11 +326,10 @@ async def test_heritage_near_adds_distance_km(monkeypatch):
 
 
 async def test_heritage_near_term_filter(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"features": []})
-    )
+    log = install_mock_client(monkeypatch, _near_handler([]))
     await heritage_near(55.95, -3.20, term="castle")
-    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%CASTLE%'"
+    # Both the count and the fetch carry the (escaped) term filter.
+    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
 
 
 async def test_heritage_near_truncated_when_over_limit(monkeypatch):
@@ -333,10 +343,7 @@ async def test_heritage_near_truncated_when_over_limit(monkeypatch):
         }
 
     install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200, json={"features": [{"attributes": _site(i)} for i in range(5)]}
-        ),
+        monkeypatch, _near_handler([_site(i) for i in range(5)], count=5)
     )
     result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=2)
 
@@ -345,18 +352,76 @@ async def test_heritage_near_truncated_when_over_limit(monkeypatch):
     assert result["truncated"] is True
     assert len(result["sites"]) == 2
     assert "note" in result
+    # Count is between limit and the 1000 cap → "raise limit" note, not cap note.
+    assert "Raise 'limit'" in result["note"]
 
 
 async def test_heritage_near_limit_respected(monkeypatch):
-    install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200, json={"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}
-        ),
-    )
+    install_mock_client(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
     result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
     assert result["total_found"] == 1
     assert result["truncated"] is False
+
+
+async def test_heritage_near_count_over_cap_truncated_with_cap_note(monkeypatch):
+    # Count reports 5000 (> 1000 cap); fetch returns 1000 features. truncated
+    # must be True and the note must mention the 1000 cap + approximate ordering.
+    def _site(i):
+        return {
+            "CANMOREID": i,
+            "NMRSNAME": f"SITE {i}",
+            "XCOORD": 325112 + (i % 40),
+            "YCOORD": 673497 + (i % 40),
+        }
+
+    install_mock_client(
+        monkeypatch,
+        _near_handler([_site(i) for i in range(1000)], count=5000),
+    )
+    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+
+    assert result["total_found"] == 5000
+    assert result["truncated"] is True
+    assert result["count"] == 50
+    assert "1000" in result["note"]  # mentions the cap
+    assert "approximate" in result["note"]  # honest about nearest-first ordering
+
+
+async def test_heritage_near_count_between_limit_and_cap_raise_limit_note(monkeypatch):
+    # Count = 200 (<= 1000 cap but > limit=50) → raise-limit note, not cap note.
+    def _site(i):
+        return {
+            "CANMOREID": i,
+            "NMRSNAME": f"SITE {i}",
+            "XCOORD": 325112 + (i % 40),
+            "YCOORD": 673497 + (i % 40),
+        }
+
+    install_mock_client(
+        monkeypatch,
+        _near_handler([_site(i) for i in range(200)], count=200),
+    )
+    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+
+    assert result["total_found"] == 200
+    assert result["truncated"] is True
+    assert result["count"] == 50
+    assert "Raise 'limit'" in result["note"]
+    assert "1000" not in result["note"]  # not the cap note
+
+
+async def test_heritage_near_rejects_zero_radius(monkeypatch):
+    log = install_mock_client(monkeypatch, _near_handler([]))
+    result = await heritage_near(55.9, -3.2, radius_km=0)
+    assert result == "Error: radius_km must be a positive number"
+    assert log == []  # short-circuited before any query
+
+
+async def test_heritage_near_rejects_negative_radius(monkeypatch):
+    log = install_mock_client(monkeypatch, _near_handler([]))
+    result = await heritage_near(55.9, -3.2, radius_km=-5)
+    assert result == "Error: radius_km must be a positive number"
+    assert log == []  # short-circuited before any query
 
 
 # -- apostrophe escaping (FIX 2) -------------------------------------------
@@ -379,8 +444,47 @@ async def test_search_with_apostrophe_builds_valid_where(monkeypatch):
     )
     result = await search_heritage("St Mary's")
     # Balanced quotes: the apostrophe is doubled, not left raw.
-    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%ST MARY''S%'"
+    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%ST MARY''S%'{ESC}"
     assert isinstance(result, dict)
+
+
+# -- LIKE wildcard escaping (FIX 4) ----------------------------------------
+
+
+def test_like_term_escapes_percent():
+    # A literal % must be backslash-escaped so it matches literally, not as a
+    # SQL wildcard. (Paired with the ESCAPE '\' suffix on the clause.)
+    assert _like_term("100%") == "'%100\\%%'"
+
+
+def test_like_term_escapes_underscore():
+    assert _like_term("a_b") == "'%A\\_B%'"
+
+
+def test_like_term_escapes_backslash_first():
+    # A literal backslash is doubled before % / _ escaping so it isn't confused
+    # with an escape sequence.
+    assert _like_term("a\\b") == "'%A\\\\B%'"
+
+
+def test_like_clause_appends_escape_suffix():
+    assert _like_clause("NMRSNAME", "100%") == (
+        "UPPER(NMRSNAME) LIKE '%100\\%%' ESCAPE '\\'"
+    )
+
+
+async def test_search_with_percent_builds_escaped_where(monkeypatch):
+    log = install_mock_client(
+        monkeypatch,
+        lambda req: httpx.Response(
+            200,
+            json={"count": 1}
+            if req.url.params.get("returnCountOnly") == "true"
+            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
+        ),
+    )
+    await search_heritage("100%")
+    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%100\\%%' ESCAPE '\\'"
 
 
 # -- empty/whitespace term guard (FIX 3) -----------------------------------
@@ -492,8 +596,8 @@ async def test_listed_buildings_builds_correct_where(monkeypatch):
     await search_listed_buildings("castle", category="a", local_authority="edinburgh")
 
     expected = (
-        "UPPER(DES_TITLE) LIKE '%CASTLE%' AND CATEGORY = 'A' AND "
-        "UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+        f"UPPER(DES_TITLE) LIKE '%CASTLE%'{ESC} AND CATEGORY = 'A' AND "
+        f"UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
     # Count call and fetch call both carry the same where.
     assert log[0]["where"] == expected
@@ -553,7 +657,7 @@ async def test_scheduled_monuments_builds_correct_where(monkeypatch):
     await search_scheduled_monuments("castle", local_authority="edinburgh")
 
     expected = (
-        "UPPER(DES_TITLE) LIKE '%CASTLE%' AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+        f"UPPER(DES_TITLE) LIKE '%CASTLE%'{ESC} AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
     assert log[0]["where"] == expected
     assert log[1]["where"] == expected
@@ -603,7 +707,7 @@ async def test_properties_in_care_builds_correct_where(monkeypatch):
     await list_properties_in_care(local_authority="edinburgh", term="castle")
 
     expected = (
-        "UPPER(PIC_NAME) LIKE '%CASTLE%' AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+        f"UPPER(PIC_NAME) LIKE '%CASTLE%'{ESC} AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
     assert log[0]["where"] == expected
     assert log[1]["where"] == expected
