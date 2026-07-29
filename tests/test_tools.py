@@ -17,7 +17,10 @@ from trove_scot_mcp.server import (
     count_heritage,
     get_heritage_by_id,
     heritage_near,
+    list_properties_in_care,
     search_heritage,
+    search_listed_buildings,
+    search_scheduled_monuments,
 )
 
 # Edinburgh Castle's BNG coords (from RESEARCH-ARCGIS.md) → ~55.95, -3.20.
@@ -335,5 +338,212 @@ async def test_get_by_id_http_error_returns_error_string(monkeypatch):
 
     install_mock_client(monkeypatch, handler)
     result = await get_heritage_by_id(52068)
+    assert isinstance(result, str)
+    assert result.startswith("Error: ")
+
+
+# -- designation layers ----------------------------------------------------
+
+# Sample designation records (BNG X/Y coords → enrich_with_latlon adds lat/lon).
+LISTED_BUILDING = {
+    "DES_TITLE": "Duke of York Statue, Edinburgh Castle Esplanade, Edinburgh",
+    "ENT_TITLE": "Duke of York Statue",
+    "CATEGORY": "B",
+    "DESIGNATED": 1262304000000,
+    "LOCAL_AUTH": "Edinburgh",
+    "CLASS": "STATUE",
+    "PARBUR": "EDINBURGH",
+    "LINK": "https://www.trove.scot/designation/LB1",
+    "X": 325112,
+    "Y": 673497,
+}
+SCHEDULED_MONUMENT = {
+    "DES_TITLE": "EDINBURGH CASTLE",
+    "CLASS": "CASTLE",
+    "CATEGORY": "SECULAR",
+    "AREA": "Edinburgh",
+    "LOCAL_AUTH": "Edinburgh",
+    "PARISH": "EDINBURGH",
+    "DESIGNATED": 1262304000000,
+    "LINK": "https://www.trove.scot/designation/SM1",
+    "X": 325112,
+    "Y": 673497,
+}
+PROPERTY_IN_CARE = {
+    "PIC_ID": 1,
+    "PIC_NAME": "Edinburgh Castle",
+    "LOCAL_AUTH": "Edinburgh",
+    "LINK": "https://www.trove.scot/property/edinburgh-castle",
+    "X": 325112,
+    "Y": 673497,
+}
+
+
+def _count_or_features(record):
+    """Handler factory: count→{count:1}, fetch→one feature with ``record`` attrs."""
+    return lambda req: httpx.Response(
+        200,
+        json={"count": 1}
+        if req.url.params.get("returnCountOnly") == "true"
+        else {"features": [{"attributes": dict(record)}]},
+    )
+
+
+# -- search_listed_buildings ------------------------------------------------
+
+
+async def test_listed_buildings_builds_correct_where(monkeypatch):
+    log = install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
+    await search_listed_buildings("castle", category="a", local_authority="edinburgh")
+
+    expected = (
+        "UPPER(DES_TITLE) LIKE '%CASTLE%' AND CATEGORY = 'A' AND "
+        "UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+    )
+    # Count call and fetch call both carry the same where.
+    assert log[0]["where"] == expected
+    assert log[1]["where"] == expected
+    assert log[0]["returnCountOnly"] == "true"
+    assert "DES_TITLE" in log[1]["outFields"]
+    assert "CATEGORY" in log[1]["outFields"]
+
+
+async def test_listed_buildings_category_validation_rejects_d(monkeypatch):
+    # No network call should be made for an invalid category.
+    log = install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
+    result = await search_listed_buildings("castle", category="D")
+    assert result == "Error: category must be A, B, or C"
+    assert log == []  # short-circuited before any query
+
+
+async def test_listed_buildings_return_shape_and_enrichment(monkeypatch):
+    install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
+    result = await search_listed_buildings("castle", limit=50)
+
+    assert result["count"] == 1
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+    assert "note" not in result
+    building = result["buildings"][0]
+    assert building["CATEGORY"] == "B"
+    # enrich_with_latlon added lat/lon from the BNG X/Y coords.
+    assert building["lat"] == pytest.approx(55.95, abs=0.01)
+    assert building["lon"] == pytest.approx(-3.20, abs=0.01)
+
+
+async def test_listed_buildings_empty_result_friendly_message(monkeypatch):
+    install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await search_listed_buildings("zzznotarealbuilding")
+    assert isinstance(result, str)
+    assert "No listed buildings matched" in result
+
+
+async def test_listed_buildings_http_error_returns_error_string(monkeypatch):
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    install_mock_client(monkeypatch, handler)
+    result = await search_listed_buildings("castle")
+    assert isinstance(result, str)
+    assert result.startswith("Error: ")
+
+
+# -- search_scheduled_monuments --------------------------------------------
+
+
+async def test_scheduled_monuments_builds_correct_where(monkeypatch):
+    log = install_mock_client(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
+    await search_scheduled_monuments("castle", local_authority="edinburgh")
+
+    expected = (
+        "UPPER(DES_TITLE) LIKE '%CASTLE%' AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+    )
+    assert log[0]["where"] == expected
+    assert log[1]["where"] == expected
+    assert log[0]["returnCountOnly"] == "true"
+    assert "DES_TITLE" in log[1]["outFields"]
+    assert "AREA" in log[1]["outFields"]
+
+
+async def test_scheduled_monuments_return_shape_and_enrichment(monkeypatch):
+    install_mock_client(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
+    result = await search_scheduled_monuments("castle", limit=50)
+
+    assert result["count"] == 1
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+    assert "note" not in result
+    monument = result["monuments"][0]
+    assert monument["DES_TITLE"] == "EDINBURGH CASTLE"
+    assert monument["lat"] == pytest.approx(55.95, abs=0.01)
+    assert monument["lon"] == pytest.approx(-3.20, abs=0.01)
+
+
+async def test_scheduled_monuments_empty_result_friendly_message(monkeypatch):
+    install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await search_scheduled_monuments("zzznotarealmonument")
+    assert isinstance(result, str)
+    assert "No scheduled monuments matched" in result
+
+
+async def test_scheduled_monuments_http_error_returns_error_string(monkeypatch):
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    install_mock_client(monkeypatch, handler)
+    result = await search_scheduled_monuments("castle")
+    assert isinstance(result, str)
+    assert result.startswith("Error: ")
+
+
+# -- list_properties_in_care ------------------------------------------------
+
+
+async def test_properties_in_care_builds_correct_where(monkeypatch):
+    log = install_mock_client(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
+    await list_properties_in_care(local_authority="edinburgh", term="castle")
+
+    expected = (
+        "UPPER(PIC_NAME) LIKE '%CASTLE%' AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'"
+    )
+    assert log[0]["where"] == expected
+    assert log[1]["where"] == expected
+    assert log[0]["returnCountOnly"] == "true"
+    assert "PIC_NAME" in log[1]["outFields"]
+
+
+async def test_properties_in_care_return_shape_and_enrichment(monkeypatch):
+    install_mock_client(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
+    result = await list_properties_in_care(limit=100)
+
+    assert result["count"] == 1
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+    assert "note" not in result
+    prop = result["properties"][0]
+    assert prop["PIC_NAME"] == "Edinburgh Castle"
+    assert prop["lat"] == pytest.approx(55.95, abs=0.01)
+    assert prop["lon"] == pytest.approx(-3.20, abs=0.01)
+
+
+async def test_properties_in_care_empty_result_friendly_message(monkeypatch):
+    install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await list_properties_in_care(term="zzznotarealproperty")
+    assert isinstance(result, str)
+    assert "No properties in care matched" in result
+
+
+async def test_properties_in_care_http_error_returns_error_string(monkeypatch):
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    install_mock_client(monkeypatch, handler)
+    result = await list_properties_in_care()
     assert isinstance(result, str)
     assert result.startswith("Error: ")
