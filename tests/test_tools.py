@@ -293,6 +293,9 @@ async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
 
     # Sorted nearest-first; Edinburgh Castle (the actual point) comes first.
     assert result["count"] == 2
+    assert result["total_found"] == 2
+    assert result["truncated"] is False
+    assert "note" not in result
     assert result["sites"][0]["CANMOREID"] == 52068
     assert result["sites"][1]["CANMOREID"] == 123
 
@@ -317,6 +320,98 @@ async def test_heritage_near_term_filter(monkeypatch):
     )
     await heritage_near(55.95, -3.20, term="castle")
     assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%CASTLE%'"
+
+
+async def test_heritage_near_truncated_when_over_limit(monkeypatch):
+    # 5 geocoded sites but limit=2 → truncated, total_found reflects all 5.
+    def _site(i):
+        return {
+            "CANMOREID": i,
+            "NMRSNAME": f"SITE {i}",
+            "XCOORD": 325112 + i,
+            "YCOORD": 673497 + i,
+        }
+
+    install_mock_client(
+        monkeypatch,
+        lambda req: httpx.Response(
+            200, json={"features": [{"attributes": _site(i)} for i in range(5)]}
+        ),
+    )
+    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=2)
+
+    assert result["count"] == 2
+    assert result["total_found"] == 5
+    assert result["truncated"] is True
+    assert len(result["sites"]) == 2
+    assert "note" in result
+
+
+async def test_heritage_near_limit_respected(monkeypatch):
+    install_mock_client(
+        monkeypatch,
+        lambda req: httpx.Response(
+            200, json={"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}
+        ),
+    )
+    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+
+
+# -- apostrophe escaping (FIX 2) -------------------------------------------
+
+
+def test_like_term_escapes_apostrophes():
+    assert _like_term("St Mary's") == "'%ST MARY''S%'"
+    assert _like_term("Queen Mary's Thorn") == "'%QUEEN MARY''S THORN%'"
+
+
+async def test_search_with_apostrophe_builds_valid_where(monkeypatch):
+    log = install_mock_client(
+        monkeypatch,
+        lambda req: httpx.Response(
+            200,
+            json={"count": 1}
+            if req.url.params.get("returnCountOnly") == "true"
+            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
+        ),
+    )
+    result = await search_heritage("St Mary's")
+    # Balanced quotes: the apostrophe is doubled, not left raw.
+    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%ST MARY''S%'"
+    assert isinstance(result, dict)
+
+
+# -- empty/whitespace term guard (FIX 3) -----------------------------------
+
+
+async def test_search_empty_term_returns_error(monkeypatch):
+    log = install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await search_heritage("")
+    assert result == "Error: please provide a search term"
+    assert log == []  # no query issued
+
+
+async def test_search_whitespace_term_returns_error(monkeypatch):
+    log = install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await search_heritage("   ")
+    assert result == "Error: please provide a search term"
+    assert log == []
+
+
+async def test_count_empty_term_returns_error(monkeypatch):
+    log = install_mock_client(
+        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
+    )
+    result = await count_heritage(term="")
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert log == []
 
 
 # -- error handling --------------------------------------------------------

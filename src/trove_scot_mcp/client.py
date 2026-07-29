@@ -184,8 +184,11 @@ def enrich_with_latlon(attributes: dict[str, Any]) -> dict[str, Any]:
     """Add ``lat`` and ``lon`` keys to a record's attribute dict, in place.
 
     Reads BNG coordinates from ``XCOORD``/``YCOORD`` (Canmore layers) or
-    ``X``/``Y`` (designation layers). If coordinates are missing or null the
-    record is returned unchanged (no ``lat``/``lon`` added) rather than raising.
+    ``X``/``Y`` (designation layers). If coordinates are missing, null, or zero
+    the record is returned unchanged (no ``lat``/``lon`` added) rather than
+    raising. Zero is treated as a "no data" sentinel: the HES dataset uses
+    X=0/Y=0 for unlocated records, and converting that would place them at
+    lat≈49.77, lon≈-7.56 (a point in the English Channel) — silently wrong.
 
     Args:
         attributes: A feature ``attributes`` dict from the ArcGIS API.
@@ -195,10 +198,10 @@ def enrich_with_latlon(attributes: dict[str, Any]) -> dict[str, Any]:
     """
     easting = attributes.get("XCOORD")
     northing = attributes.get("YCOORD")
-    if easting is None or northing is None:
+    if not easting or not northing:
         easting = attributes.get("X")
         northing = attributes.get("Y")
-    if easting is None or northing is None:
+    if not easting or not northing:
         return attributes
     try:
         lat, lon = bng_to_wgs84(float(easting), float(northing))

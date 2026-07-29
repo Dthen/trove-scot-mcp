@@ -260,3 +260,24 @@ def test_enrich_handles_null_coords():
     rec = {"CANMOREID": 2, "XCOORD": None, "YCOORD": None}
     out = enrich_with_latlon(rec)
     assert "lat" not in out and "lon" not in out
+
+
+def test_enrich_treats_zero_coords_as_missing():
+    # X=0/Y=0 is the HES "no data" sentinel — converting it would place the
+    # record at lat≈49.77, lon≈-7.56 (the English Channel). It must be skipped.
+    rec = {"CANMOREID": 3, "XCOORD": 0, "YCOORD": 0}
+    out = enrich_with_latlon(rec)
+    assert "lat" not in out and "lon" not in out
+
+
+def test_enrich_treats_zero_xy_designation_coords_as_missing():
+    rec = {"DES_TITLE": "Unlocated", "X": 0, "Y": 0}
+    out = enrich_with_latlon(rec)
+    assert "lat" not in out and "lon" not in out
+
+
+def test_enrich_valid_coords_still_convert():
+    rec = {"CANMOREID": 4, "XCOORD": 325112, "YCOORD": 673497}
+    out = enrich_with_latlon(rec)
+    assert out["lat"] == pytest.approx(55.9486, abs=0.001)
+    assert out["lon"] == pytest.approx(-3.2008, abs=0.001)

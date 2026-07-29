@@ -97,8 +97,13 @@ def _like_term(term: str) -> str:
 
     Canmore text data is stored in UPPERCASE and ``LIKE`` is case-sensitive, so
     the pattern must be uppercased to match. ``"castle"`` → ``"'%CASTLE%'"``.
+
+    Embedded single quotes are escaped by doubling them (standard SQL escaping)
+    so terms like ``"St Mary's"`` produce a balanced, valid ``LIKE`` pattern
+    rather than broken SQL that the ArcGIS server rejects with a 400.
     """
-    return f"'%{term.strip().upper()}%'"
+    escaped = term.strip().upper().replace("'", "''")
+    return f"'%{escaped}%'"
 
 
 def _build_where(
@@ -174,6 +179,9 @@ async def search_heritage(
     nothing matches, or an ``Error:`` string on failure.
     """
     try:
+        term = term.strip() if term else ""
+        if not term:
+            return "Error: please provide a search term"
         where = _build_where(term, sitetype=sitetype, council=council, broadclass=broadclass)
         total_found = await _client.count(CANMORE_LAYER, where)
         if total_found == 0:
@@ -260,6 +268,8 @@ async def count_heritage(
     ``Error:`` string on failure.
     """
     try:
+        if term is not None and not term.strip():
+            return "Error: please provide a search term (or omit term to count all records)"
         where = _build_where(term, sitetype=sitetype, council=council)
         total_found = await _client.count(CANMORE_LAYER, where)
         out: dict[str, Any] = {"total_found": total_found}
@@ -279,6 +289,7 @@ async def heritage_near(
     lon: float,
     radius_km: float = 1.0,
     term: str | None = None,
+    limit: int = 50,
 ) -> dict[str, Any] | str:
     """Find heritage sites near a geographic point (lat/lon in WGS84). Builds a bounding box around the point and returns matching sites sorted by distance. Optional name filter.
 
@@ -288,11 +299,14 @@ async def heritage_near(
         radius_km: Search radius in kilometres (default 1.0). Used to build a
             square bounding box around the point.
         term: Optional name text to filter results by (substring match).
+        limit: Maximum number of sites to return (default 50).
 
-    Returns an object with ``count`` and ``sites`` — up to 50 sites sorted
-    nearest-first, each with a ``distance_km`` field plus name, type, council,
-    grid reference, lat/lon, and trove.scot URL. Returns an ``Error:`` string on
-    failure.
+    Returns an object with ``count`` (sites returned), ``total_found`` (total
+    geocoded matches before truncation), ``truncated`` (True when more matched
+    than could be returned), an optional ``note`` explaining truncation, and
+    ``sites`` — up to ``limit`` sites sorted nearest-first, each with a
+    ``distance_km`` field plus name, type, council, grid reference, lat/lon, and
+    trove.scot URL. Returns an ``Error:`` string on failure.
     """
     try:
         lat = float(lat)
@@ -330,8 +344,22 @@ async def heritage_near(
             f["distance_km"] = round(_haversine_km(lat, lon, f["lat"], f["lon"]), 3)
         geocoded.sort(key=lambda f: f["distance_km"])
 
-        sites = geocoded[:50]
-        return {"count": len(sites), "sites": sites}
+        total_found = len(geocoded)
+        truncated = total_found > limit
+        sites = geocoded[:limit]
+        out: dict[str, Any] = {
+            "count": len(sites),
+            "total_found": total_found,
+            "truncated": truncated,
+            "sites": sites,
+        }
+        if truncated:
+            out["note"] = (
+                f"{total_found} sites matched within {radius_km} km but only the "
+                f"nearest {len(sites)} were returned (limit={limit}). Raise 'limit' "
+                "to see more."
+            )
+        return out
     except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
