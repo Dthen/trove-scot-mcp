@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from trove_scot_mcp.client import HesClient, HesError, enrich_with_latlon
 

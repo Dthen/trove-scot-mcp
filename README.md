@@ -34,8 +34,17 @@ Add to your Hermes `config.yaml` under `mcp_servers`:
 ```yaml
 mcp_servers:
   trove-scot:
-    command: /mnt/HC_Volume_105667182/kimbo/.hermes/hermes-agent/venv/bin/python3
+    command: /absolute/path/to/trove-scot-mcp/.venv/bin/python3
     args: ["-m", "trove_scot_mcp.server"]
+```
+
+The server runs on the standalone `fastmcp` package (mcp SDK 2.x dropped
+`mcp.server.fastmcp`). Set up the venv once:
+
+```bash
+cd trove-scot-mcp
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
 
 Or for Claude Desktop / other MCP clients:
