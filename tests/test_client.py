@@ -1,7 +1,46 @@
-"""Tests for the HES ArcGIS client: URL/params, retries, counts, BNG→WGS84."""
+"""Tests for the HES ArcGIS client: URL/params, retries, counts, BNG->WGS84.
 
-import httpx
+Ported from async HTTP library to sync stdlib urllib. 25 tests:
+- 20 legacy behaviour tests (ported 1:1, see mapping below)
+- 3 R1 TimeoutError-pin tests
+- 2 F2 seam-class-pin tests
+
+No network, no asyncio, no third-party HTTP library.
+
+Legacy → new test name mapping (spec preservation):
+  test_query_builds_url_and_params          → test_query_builds_url_and_params
+  test_query_url_encodes_where              → test_query_url_encodes_where
+  test_count_only_sets_param_and_returns_count → test_count_only_sets_param_and_returns_count
+  test_retry_on_502_then_success            → test_retry_on_502_then_success
+  test_all_retries_failed_raises            → test_all_retries_failed_raises
+  test_retry_on_timeout_then_success        → test_retry_on_timeout_then_success
+  test_non_retryable_status_raises_immediately → test_non_retryable_status_raises_immediately
+  test_fetch_features_extracts_attributes  → test_fetch_features_extracts_attributes
+  test_fetch_features_empty_when_no_match  → test_fetch_features_empty_when_no_match
+  test_geometry_params_added               → test_geometry_params_added
+  test_arcgis_error_body_raises            → test_arcgis_error_body_raises
+  test_bng_to_wgs84_edinburgh_castle       → test_bng_to_wgs84_edinburgh_castle
+  test_bng_to_wgs84_second_point           → test_bng_to_wgs84_second_point
+  test_enrich_adds_latlon_from_xycoord     → test_enrich_adds_latlon_from_xycoord
+  test_enrich_uses_x_y_for_designation_layers → test_enrich_uses_x_y_for_designation_layers
+  test_enrich_handles_missing_coords       → test_enrich_handles_missing_coords
+  test_enrich_handles_null_coords          → test_enrich_handles_null_coords
+  test_enrich_treats_zero_coords_as_missing → test_enrich_treats_zero_coords_as_missing
+  test_enrich_treats_zero_xy_designation_coords_as_missing → test_enrich_treats_zero_xy_designation_coords_as_missing
+  test_enrich_valid_coords_still_convert   → test_enrich_valid_coords_still_convert
+  (NEW R1)                                  → test_timeout_is_retried_then_friendly_exhaustion
+  (NEW R1)                                  → test_timeout_always_raises_HesError_not_escape
+  (NEW R1)                                  → test_urlerror_and_oserror_classes_also_retried
+  (NEW F2)                                  → test_httpexception_folds_to_urlerror_at_seam
+  (NEW F2)                                  → test_remotedisconnected_is_oserror_and_retried
+"""
+
+import http.client
+import json
+
 import pytest
+import urllib.error
+import urllib.request
 
 import trove_scot_mcp.client as client_mod
 from trove_scot_mcp.client import (
@@ -14,204 +53,233 @@ from trove_scot_mcp.client import (
 LAYER = "CANMORE/Canmore_Points/MapServer/0"
 
 
-def make_client(handler) -> HesClient:
-    """Build a client backed by an httpx.MockTransport (no live network)."""
-    transport = httpx.MockTransport(handler)
-    http = httpx.AsyncClient(
-        base_url="https://inspire.hes.scot/arcgis/rest/services", transport=transport
-    )
-    return HesClient(client=http)
+# ---------------------------------------------------------------------------
+# Fake infrastructure
+# ---------------------------------------------------------------------------
+
+
+class FakeResponse:
+    """Minimal stand-in for the object returned by ``urllib.request.urlopen``."""
+
+    def __init__(self, status, body):
+        self._status = status
+        if isinstance(body, bytes):
+            self._body = body
+        elif isinstance(body, str):
+            self._body = body.encode()
+        else:
+            self._body = json.dumps(body).encode()
+
+    def getcode(self):
+        return self._status
+
+    def read(self):
+        return self._body
+
+
+def install_fake_urlopen(monkeypatch, responses):
+    """Install a fake ``client_mod._urlopen`` that yields *responses* in order.
+
+    Each item in *responses* is either:
+    - an ``Exception`` instance → the fake raises it
+    - a ``(status, json_body)`` tuple → the fake returns a ``FakeResponse``
+
+    Returns a mutable ``state`` dict with:
+    - ``state["calls"]`` — total number of times the fake was invoked
+    - ``state["urls"]`` — list of every URL string passed to the fake
+    """
+    state = {"calls": 0, "urls": []}
+
+    def fake_urlopen(url, timeout=None):
+        idx = state["calls"]
+        state["calls"] += 1
+        state["urls"].append(url)
+        if idx >= len(responses):
+            raise AssertionError(
+                f"_urlopen called {idx + 1} times but only {len(responses)} "
+                "responses queued"
+            )
+        resp = responses[idx]
+        if isinstance(resp, Exception):
+            raise resp
+        if isinstance(resp, tuple) and len(resp) == 2:
+            status, json_body = resp
+            return FakeResponse(status, json_body)
+        raise TypeError(f"Bad canned response: {resp!r}")
+
+    monkeypatch.setattr(client_mod, "_urlopen", fake_urlopen)
+    return state
 
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    """Make retry backoff instantaneous so tests run fast."""
-
-    async def _instant(_seconds):
-        return None
-
-    monkeypatch.setattr(client_mod.asyncio, "sleep", _instant)
+    """Replace ``_sleep`` with a recorder so retry delays are pinned, not slept."""
+    sleeps = []
+    monkeypatch.setattr(client_mod, "_sleep", lambda s: sleeps.append(s))
+    return sleeps
 
 
-# -- URL / params ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# URL / params
+# ---------------------------------------------------------------------------
 
 
-async def test_query_builds_url_and_params():
-    seen = {}
+def test_query_builds_url_and_params(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"features": []})])
+    client = HesClient()
+    client.query(LAYER, "CANMOREID=52068")
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(200, json={"features": []})
-
-    client = make_client(handler)
-    await client.query(LAYER, "CANMOREID=52068")
-
-    # httpx joins the client base_url path with the per-request path.
-    assert seen["path"].endswith("/CANMORE/Canmore_Points/MapServer/0/query")
-    assert seen["params"]["where"] == "CANMOREID=52068"
-    assert seen["params"]["outFields"] == "*"
-    assert seen["params"]["f"] == "json"
-    assert seen["params"]["returnGeometry"] == "false"
-    assert "returnCountOnly" not in seen["params"]
+    url = state["urls"][0]
+    path = url.split("?")[0]
+    assert path.endswith("/CANMORE/Canmore_Points/MapServer/0/query")
+    # Golden wire form for CANMOREID=52068 (from golden/legacy-requests.json)
+    assert "where=CANMOREID%3D52068" in url
+    assert "f=json" in url
+    assert "outFields=%2A" in url
+    assert "returnGeometry=false" in url
+    assert "returnCountOnly" not in url
+    assert state["calls"] == 1
+    assert no_sleep == []
 
 
-async def test_query_url_encodes_where():
-    seen = {}
+def test_query_url_encodes_where(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"features": []})])
+    client = HesClient()
+    client.query(LAYER, "UPPER(NMRSNAME) LIKE '%CASTLE%'")
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["raw"] = request.url.raw_path.decode()
-        return httpx.Response(200, json={"features": []})
-
-    client = make_client(handler)
-    await client.query(LAYER, "UPPER(NMRSNAME) LIKE '%CASTLE%'")
-    # httpx encodes spaces, parens, and the % wildcard in the query string.
-    assert "where=" in seen["raw"]
-    assert "%25CASTLE%25" in seen["raw"]  # % encoded as %25
+    url = state["urls"][0]
+    assert "where=" in url
+    assert "%25CASTLE%25" in url  # % encoded as %25
 
 
-# -- count_only ------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# count_only
+# ---------------------------------------------------------------------------
 
 
-async def test_count_only_sets_param_and_returns_count():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(200, json={"count": 313456})
-
-    client = make_client(handler)
-    n = await client.count(LAYER, "1=1")
+def test_count_only_sets_param_and_returns_count(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 313456})])
+    client = HesClient()
+    n = client.count(LAYER, "1=1")
 
     assert n == 313456
-    assert seen["params"]["returnCountOnly"] == "true"
-    assert "outFields" not in seen["params"]  # skipped when counting
+    url = state["urls"][0]
+    assert "returnCountOnly=true" in url
+    assert "outFields" not in url  # skipped when counting
 
 
-# -- retry behaviour -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# retry behaviour
+# ---------------------------------------------------------------------------
 
 
-async def test_retry_on_502_then_success():
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return httpx.Response(502, text="Bad Gateway")
-        return httpx.Response(200, json={"count": 5})
-
-    client = make_client(handler)
-    assert await client.count(LAYER, "1=1") == 5
-    assert calls["n"] == 2
+def test_retry_on_502_then_success(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (502, {}),
+        (200, {"count": 5}),
+    ])
+    client = HesClient()
+    assert client.count(LAYER, "1=1") == 5
+    assert state["calls"] == 2
+    assert no_sleep == [1.0]
 
 
-async def test_all_retries_failed_raises():
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return httpx.Response(503, text="Service Unavailable")
-
-    client = make_client(handler)
+def test_all_retries_failed_raises(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (503, {}),
+        (503, {}),
+        (503, {}),
+    ])
+    client = HesClient()
     with pytest.raises(HesError, match="unavailable after"):
-        await client.count(LAYER, "1=1")
-    assert calls["n"] == client_mod.MAX_RETRIES + 1  # 3 total attempts
+        client.count(LAYER, "1=1")
+    assert state["calls"] == 3
+    assert no_sleep == [1.0, 2.0]
 
 
-async def test_retry_on_timeout_then_success():
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise httpx.ConnectTimeout("timed out")
-        return httpx.Response(200, json={"count": 1})
-
-    client = make_client(handler)
-    assert await client.count(LAYER, "1=1") == 1
-    assert calls["n"] == 2
+def test_retry_on_timeout_then_success(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        TimeoutError("timed out"),
+        (200, {"count": 1}),
+    ])
+    client = HesClient()
+    assert client.count(LAYER, "1=1") == 1
+    assert state["calls"] == 2
+    assert no_sleep == [1.0]
 
 
-async def test_non_retryable_status_raises_immediately():
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return httpx.Response(400, text="Pagination is not supported.")
-
-    client = make_client(handler)
+def test_non_retryable_status_raises_immediately(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(400, "Pagination is not supported.")])
+    client = HesClient()
     with pytest.raises(HesError, match="HTTP 400"):
-        await client.query(LAYER, "1=1")
-    assert calls["n"] == 1  # no retries for a 400
+        client.query(LAYER, "1=1")
+    assert state["calls"] == 1  # no retries for a 400
+    assert no_sleep == []
 
 
-# -- fetch_features --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fetch_features
+# ---------------------------------------------------------------------------
 
 
-async def test_fetch_features_extracts_attributes():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "features": [
-                    {"attributes": {"CANMOREID": 52068, "NMRSNAME": "EDINBURGH CASTLE"}},
-                    {"attributes": {"CANMOREID": 52069, "NMRSNAME": "MONS MEG"}},
-                ]
-            },
-        )
-
-    client = make_client(handler)
-    rows = await client.fetch_features(LAYER, "UPPER(NMRSNAME) LIKE '%CASTLE%'")
+def test_fetch_features_extracts_attributes(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {
+            "features": [
+                {"attributes": {"CANMOREID": 52068, "NMRSNAME": "EDINBURGH CASTLE"}},
+                {"attributes": {"CANMOREID": 52069, "NMRSNAME": "MONS MEG"}},
+            ],
+        }),
+    ])
+    client = HesClient()
+    rows = client.fetch_features(LAYER, "UPPER(NMRSNAME) LIKE '%CASTLE%'")
     assert rows == [
         {"CANMOREID": 52068, "NMRSNAME": "EDINBURGH CASTLE"},
         {"CANMOREID": 52069, "NMRSNAME": "MONS MEG"},
     ]
 
 
-async def test_fetch_features_empty_when_no_match():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"features": []})
-
-    client = make_client(handler)
-    assert await client.fetch_features(LAYER, "CANMOREID=1") == []
+def test_fetch_features_empty_when_no_match(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"features": []})])
+    client = HesClient()
+    assert client.fetch_features(LAYER, "CANMOREID=1") == []
 
 
-# -- geometry params -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# geometry params
+# ---------------------------------------------------------------------------
 
 
-async def test_geometry_params_added():
-    seen = {}
+def test_geometry_params_added(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"features": []})])
+    client = HesClient()
+    client.query(LAYER, "1=1", geometry="-3.3,55.9,-3.1,56.0")
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(200, json={"features": []})
-
-    client = make_client(handler)
-    await client.query(LAYER, "1=1", geometry="-3.3,55.9,-3.1,56.0")
-
-    assert seen["params"]["geometry"] == "-3.3,55.9,-3.1,56.0"
-    assert seen["params"]["geometryType"] == "esriGeometryEnvelope"
-    assert seen["params"]["inSR"] == "4326"
-    assert seen["params"]["spatialRel"] == "esriSpatialRelIntersects"
-    assert seen["params"]["returnGeometry"] == "false"
+    url = state["urls"][0]
+    assert "geometry=-3.3%2C55.9%2C-3.1%2C56.0" in url
+    assert "geometryType=esriGeometryEnvelope" in url
+    assert "inSR=4326" in url
+    assert "spatialRel=esriSpatialRelIntersects" in url
+    assert "returnGeometry=false" in url
 
 
-# -- ArcGIS error body -----------------------------------------------------
+# ---------------------------------------------------------------------------
+# ArcGIS error body
+# ---------------------------------------------------------------------------
 
 
-async def test_arcgis_error_body_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"error": {"code": 400, "message": "Pagination is not supported."}},
-        )
-
-    client = make_client(handler)
+def test_arcgis_error_body_raises(no_sleep, monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"error": {"code": 400, "message": "Pagination is not supported."}}),
+    ])
+    client = HesClient()
     with pytest.raises(HesError, match="Pagination is not supported"):
-        await client.query(LAYER, "1=1")
+        client.query(LAYER, "1=1")
 
 
-# -- BNG → WGS84 conversion ------------------------------------------------
+# ---------------------------------------------------------------------------
+# BNG -> WGS84 conversion (sync pure, copy verbatim)
+# ---------------------------------------------------------------------------
 
 
 def test_bng_to_wgs84_edinburgh_castle():
@@ -233,7 +301,9 @@ def test_bng_to_wgs84_second_point():
     assert lon == pytest.approx(-5.0037, abs=0.01)
 
 
-# -- coordinate enrichment -------------------------------------------------
+# ---------------------------------------------------------------------------
+# coordinate enrichment
+# ---------------------------------------------------------------------------
 
 
 def test_enrich_adds_latlon_from_xycoord():
@@ -281,3 +351,122 @@ def test_enrich_valid_coords_still_convert():
     out = enrich_with_latlon(rec)
     assert out["lat"] == pytest.approx(55.9486, abs=0.001)
     assert out["lon"] == pytest.approx(-3.2008, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# R1: TimeoutError pin
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_is_retried_then_friendly_exhaustion(no_sleep, monkeypatch):
+    """TimeoutError is retried; final success returns the payload."""
+    state = install_fake_urlopen(monkeypatch, [
+        TimeoutError("timed out"),
+        TimeoutError("timed out"),
+        (200, {"count": 7}),
+    ])
+    client = HesClient()
+    result = client.count(LAYER, "1=1")
+    assert result == 7
+    assert state["calls"] == 3
+    assert no_sleep == [1.0, 2.0]
+
+
+def test_timeout_always_raises_HesError_not_escape(no_sleep, monkeypatch):
+    """Always-timeout → HesError, never a raw TimeoutError toward -32603."""
+    state = install_fake_urlopen(monkeypatch, [
+        TimeoutError("timed out"),
+        TimeoutError("timed out"),
+        TimeoutError("timed out"),
+    ])
+    client = HesClient()
+    with pytest.raises(HesError, match="unavailable after"):
+        client.count(LAYER, "1=1")
+    assert state["calls"] == 3
+    assert no_sleep == [1.0, 2.0]
+
+
+@pytest.mark.parametrize("exc_factory", [
+    lambda: urllib.error.URLError("test"),
+    lambda: OSError("test"),
+    lambda: TimeoutError("test"),
+    lambda: ConnectionResetError("test"),
+])
+def test_urlerror_and_oserror_classes_also_retried(no_sleep, monkeypatch, exc_factory):
+    """Every ladder-retried class exhausts retries with backoff shape."""
+    state = install_fake_urlopen(monkeypatch, [
+        exc_factory(),
+        exc_factory(),
+        exc_factory(),
+    ])
+    client = HesClient()
+    with pytest.raises(HesError, match="unavailable after"):
+        client.count(LAYER, "1=1")
+    assert state["calls"] == 3
+    assert no_sleep == [1.0, 2.0]
+
+
+# ---------------------------------------------------------------------------
+# F2: T05 seam class pin (http.client.HTTPException folds to URLError)
+# ---------------------------------------------------------------------------
+
+
+def test_httpexception_folds_to_urlerror_at_seam(no_sleep, monkeypatch):
+    """T05 §5 seam: http.client.HTTPException is NOT an OSError subclass.
+
+    The seam folds it to URLError, so the ladder retries it and exhausts to
+    a friendly HesError. Also covers BadStatusLine (another non-OSError sibling).
+    """
+    assert not issubclass(http.client.HTTPException, OSError)
+    assert not issubclass(http.client.BadStatusLine, OSError)
+
+    # Exercise the REAL _urlopen seam by patching urllib.request.urlopen.
+    # (install_fake_urlopen replaces _urlopen entirely, bypassing the seam.)
+    call_count = {"n": 0}
+
+    def bad_urlopen(*args, **kwargs):
+        call_count["n"] += 1
+        raise http.client.HTTPException("connection broken")
+
+    monkeypatch.setattr(urllib.request, "urlopen", bad_urlopen)
+
+    client = HesClient()
+    with pytest.raises(HesError, match="unavailable after"):
+        client.count(LAYER, "1=1")
+
+    assert call_count["n"] == 3  # 3 attempts
+    assert no_sleep == [1.0, 2.0]
+
+
+def test_remotedisconnected_is_oserror_and_retried(no_sleep, monkeypatch):
+    """RemoteDisconnected ⊂ ConnectionResetError ⊂ OSError.
+
+    Documented deviation: legacy did NOT retry protocol errors. Here it is
+    retried because it IS an OSError; user-visible outcome is friendly-text
+    parity (exhaustion or fold → "Error: …").
+    """
+    assert issubclass(http.client.RemoteDisconnected, ConnectionResetError)
+    assert issubclass(ConnectionResetError, OSError)
+
+    call_count = {"n": 0}
+    responses = [
+        http.client.RemoteDisconnected("connection reset by peer"),
+        http.client.RemoteDisconnected("connection reset by peer"),
+        (200, {"count": 1}),
+    ]
+
+    def fake_inner_urlopen(*args, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        resp = responses[idx]
+        if isinstance(resp, Exception):
+            raise resp
+        return FakeResponse(resp[0], resp[1])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_inner_urlopen)
+
+    client = HesClient()
+    result = client.count(LAYER, "1=1")
+    assert result == 1
+    assert call_count["n"] == 3
+    assert no_sleep == [1.0, 2.0]
