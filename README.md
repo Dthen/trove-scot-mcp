@@ -36,15 +36,16 @@ mcp_servers:
   trove-scot:
     command: /absolute/path/to/trove-scot-mcp/.venv/bin/python3
     args: ["-m", "trove_scot_mcp.server"]
+    protocol: stateless
 ```
 
-The server runs on the standalone `fastmcp` package (mcp SDK 2.x dropped
-`mcp.server.fastmcp`). Set up the venv once:
+The server is pure Python stdlib — no runtime dependencies (`pip install -e .`
+pulls nothing). Set up the venv once for development:
 
 ```bash
 cd trove-scot-mcp
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e ".[dev]"
 ```
 
 Or for Claude Desktop / other MCP clients:
@@ -76,3 +77,14 @@ python -m pytest tests/ -v
 - **Coordinates:** The API returns British National Grid (OSGB36 / EPSG:27700) eastings/northings, not lat/lon. This server converts them to WGS84 `lat`/`lon` automatically (~5 m accuracy — plenty for locating sites on a map).
 - **Reliability:** The ArcGIS server can be slow under load. The client uses a 20 s timeout and retries transient failures (timeouts, connection errors, HTTP 502/503) automatically with backoff (1 s, 2 s). If it reports the service as unavailable, wait a moment and try again.
 - **Data licence:** Open Government Licence (per the API records).
+
+## Protocol
+
+This server speaks MCP protocol `2026-07-28` in **stateless mode only**. The sole
+entry point is `server/discover`; the legacy `initialize` handshake is answered with
+JSON-RPC `-32601` so auto-negotiating clients (e.g. Hermes in `auto` mode) fall back
+to the era path. Clients must either speak the era directly or auto-negotiate via
+that rejection. Every result carries the era fields (`resultType: complete`,
+`ttlMs: 0`, `cacheScope: private`); no tool declares `outputSchema` or returns
+`structuredContent`. Tool-result text is compact JSON (dict results) or a
+human-readable string (empty-match/error paths).
