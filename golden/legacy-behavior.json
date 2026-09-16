@@ -1,0 +1,260 @@
+{
+  "note": "Captured from legacy httpx 0.28.1 on 2026-09-16",
+  "legacy_notes": "Legacy fastmcp additionally wrapped tool results in structuredContent on the wire. The migrated server emits no structuredContent (D3/§4 trap).",
+  "cases": [
+    {
+      "tool": "search_heritage",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "count": 1,
+        "total_found": 1,
+        "truncated": false,
+        "sites": [
+          {
+            "CANMOREID": 52068,
+            "NMRSNAME": "EDINBURGH CASTLE",
+            "SITETYPE": "CASTLE (MEDIEVAL)",
+            "BROADCLASS": "DEFENCE, MONUMENT (BY FORM)",
+            "COUNCIL": "EDINBURGH, CITY OF",
+            "COUNTY": "MIDLOTHIAN",
+            "PARISH": "EDINBURGH (EDINBURGH, CITY OF)",
+            "GRIDREF": "NT 25112 73497",
+            "URL": "https://www.trove.scot/place/52068",
+            "XCOORD": 325112,
+            "YCOORD": 673497,
+            "lat": 55.948649,
+            "lon": -3.200732
+          }
+        ]
+      }
+    },
+    {
+      "tool": "search_heritage",
+      "scenario": "empty_match_str",
+      "result_type": "str",
+      "result": "No heritage sites matched term='zzznotarealsite'. Try a broader term or fewer filters."
+    },
+    {
+      "tool": "search_heritage",
+      "scenario": "error_str_empty_term",
+      "result_type": "str",
+      "result": "Error: please provide a search term"
+    },
+    {
+      "tool": "search_heritage",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "get_heritage_by_id",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "CANMOREID": 52068,
+        "NMRSNAME": "EDINBURGH CASTLE",
+        "SITETYPE": "CASTLE (MEDIEVAL)",
+        "BROADCLASS": "DEFENCE, MONUMENT (BY FORM)",
+        "COUNCIL": "EDINBURGH, CITY OF",
+        "COUNTY": "MIDLOTHIAN",
+        "PARISH": "EDINBURGH (EDINBURGH, CITY OF)",
+        "GRIDREF": "NT 25112 73497",
+        "URL": "https://www.trove.scot/place/52068",
+        "XCOORD": 325112,
+        "YCOORD": 673497,
+        "lat": 55.948649,
+        "lon": -3.200732
+      }
+    },
+    {
+      "tool": "get_heritage_by_id",
+      "scenario": "error_str_not_found",
+      "result_type": "str",
+      "result": "Error: no heritage site found with Canmore ID 999999999"
+    },
+    {
+      "tool": "get_heritage_by_id",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "count_heritage",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "total_found": 7098,
+        "note": "7098 matches exceed the 1000-per-query cap — a search would be truncated. Narrow the query for complete results."
+      }
+    },
+    {
+      "tool": "count_heritage",
+      "scenario": "error_str_empty_term",
+      "result_type": "str",
+      "result": "Error: please provide a search term (or omit term to count all records)"
+    },
+    {
+      "tool": "count_heritage",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "heritage_near",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "count": 1,
+        "total_found": 1,
+        "truncated": false,
+        "sites": [
+          {
+            "CANMOREID": 52068,
+            "NMRSNAME": "EDINBURGH CASTLE",
+            "SITETYPE": "CASTLE (MEDIEVAL)",
+            "BROADCLASS": "DEFENCE, MONUMENT (BY FORM)",
+            "COUNCIL": "EDINBURGH, CITY OF",
+            "COUNTY": "MIDLOTHIAN",
+            "PARISH": "EDINBURGH (EDINBURGH, CITY OF)",
+            "GRIDREF": "NT 25112 73497",
+            "URL": "https://www.trove.scot/place/52068",
+            "XCOORD": 325112,
+            "YCOORD": 673497,
+            "lat": 55.948649,
+            "lon": -3.200732,
+            "distance_km": 0.157
+          }
+        ]
+      }
+    },
+    {
+      "tool": "heritage_near",
+      "scenario": "error_str_zero_radius",
+      "result_type": "str",
+      "result": "Error: radius_km must be a positive number"
+    },
+    {
+      "tool": "heritage_near",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "search_listed_buildings",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "count": 1,
+        "total_found": 1,
+        "truncated": false,
+        "buildings": [
+          {
+            "DES_TITLE": "Duke of York Statue, Edinburgh Castle Esplanade, Edinburgh",
+            "ENT_TITLE": "Duke of York Statue",
+            "CATEGORY": "B",
+            "DESIGNATED": 1262304000000,
+            "LOCAL_AUTH": "Edinburgh",
+            "CLASS": "STATUE",
+            "PARBUR": "EDINBURGH",
+            "LINK": "https://www.trove.scot/designation/LB1",
+            "X": 325112,
+            "Y": 673497,
+            "lat": 55.948649,
+            "lon": -3.200732
+          }
+        ]
+      }
+    },
+    {
+      "tool": "search_listed_buildings",
+      "scenario": "empty_match_str",
+      "result_type": "str",
+      "result": "No listed buildings matched term='zzznotarealbuilding'. Try a broader term or fewer filters."
+    },
+    {
+      "tool": "search_listed_buildings",
+      "scenario": "error_str_invalid_category",
+      "result_type": "str",
+      "result": "Error: category must be A, B, or C"
+    },
+    {
+      "tool": "search_listed_buildings",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "search_scheduled_monuments",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "count": 1,
+        "total_found": 1,
+        "truncated": false,
+        "monuments": [
+          {
+            "DES_TITLE": "EDINBURGH CASTLE",
+            "CLASS": "CASTLE",
+            "CATEGORY": "SECULAR",
+            "AREA": "Edinburgh",
+            "LOCAL_AUTH": "Edinburgh",
+            "PARISH": "EDINBURGH",
+            "DESIGNATED": 1262304000000,
+            "LINK": "https://www.trove.scot/designation/SM1",
+            "X": 325112,
+            "Y": 673497,
+            "lat": 55.948649,
+            "lon": -3.200732
+          }
+        ]
+      }
+    },
+    {
+      "tool": "search_scheduled_monuments",
+      "scenario": "empty_match_str",
+      "result_type": "str",
+      "result": "No scheduled monuments matched term='zzznotarealmonument'. Try a broader term or fewer filters."
+    },
+    {
+      "tool": "search_scheduled_monuments",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    },
+    {
+      "tool": "list_properties_in_care",
+      "scenario": "dict_success",
+      "result_type": "dict",
+      "result": {
+        "count": 1,
+        "total_found": 1,
+        "truncated": false,
+        "properties": [
+          {
+            "PIC_ID": 1,
+            "PIC_NAME": "Edinburgh Castle",
+            "LOCAL_AUTH": "Edinburgh",
+            "LINK": "https://www.trove.scot/property/edinburgh-castle",
+            "X": 325112,
+            "Y": 673497,
+            "lat": 55.948649,
+            "lon": -3.200732
+          }
+        ]
+      }
+    },
+    {
+      "tool": "list_properties_in_care",
+      "scenario": "empty_match_str",
+      "result_type": "str",
+      "result": "No properties in care matched term='zzznotarealproperty'. Try a broader term or fewer filters."
+    },
+    {
+      "tool": "list_properties_in_care",
+      "scenario": "error_str_connect_error",
+      "result_type": "str",
+      "result": "Error: HES unavailable after 3 attempts — the service may be overloaded, retry shortly. Last error: boom"
+    }
+  ]
+}

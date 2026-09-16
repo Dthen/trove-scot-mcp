@@ -1,0 +1,96 @@
+{
+  "note": "Captured from legacy httpx 0.28.1 on 2026-09-16",
+  "cases": [
+    {
+      "id": "plain_where",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "CANMOREID=52068"
+      },
+      "raw_query": "where=CANMOREID%3D52068&f=json&outFields=%2A&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "where_with_special_chars",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%ST MARY''S 100\\% A\\\\B\\_C%' ESCAPE '\\'"
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25ST+MARY%27%27S+100%5C%25+A%5C%5CB%5C_C%25%27+ESCAPE+%27%5C%27&f=json&outFields=%2A&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "count_only",
+      "call": "count",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'"
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&returnCountOnly=true&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "distinct",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'",
+        "distinct": true
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&outFields=%2A&returnDistinctValues=true&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "geometry_envelope",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'",
+        "geometry": "-3.21,55.94,-3.19,55.96",
+        "geometry_type": "esriGeometryEnvelope",
+        "in_sr": 4326
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&outFields=%2A&geometry=-3.21%2C55.94%2C-3.19%2C55.96&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "out_fields_str",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'",
+        "out_fields": "CANMOREID,NMRSNAME,SITETYPE"
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&outFields=CANMOREID%2CNMRSNAME%2CSITETYPE&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    },
+    {
+      "id": "out_fields_list_synthetic",
+      "call": "query",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'",
+        "out_fields": [
+          "CANMOREID",
+          "NMRSNAME"
+        ]
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&outFields=CANMOREID&outFields=NMRSNAME&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query",
+      "synthetic": true
+    },
+    {
+      "id": "fetch_features",
+      "call": "fetch_features",
+      "params": {
+        "layer": "CANMORE/Canmore_Points/MapServer/0",
+        "where": "UPPER(NMRSNAME) LIKE '%CASTLE%' ESCAPE '\\'",
+        "out_fields": "CANMOREID,NMRSNAME,SITETYPE,BROADCLASS,COUNCIL,COUNTY,PARISH,GRIDREF,URL,XCOORD,YCOORD"
+      },
+      "raw_query": "where=UPPER%28NMRSNAME%29+LIKE+%27%25CASTLE%25%27+ESCAPE+%27%5C%27&f=json&outFields=CANMOREID%2CNMRSNAME%2CSITETYPE%2CBROADCLASS%2CCOUNCIL%2CCOUNTY%2CPARISH%2CGRIDREF%2CURL%2CXCOORD%2CYCOORD&returnGeometry=false",
+      "path": "https://inspire.hes.scot/arcgis/rest/services/CANMORE/Canmore_Points/MapServer/0/query"
+    }
+  ]
+}
