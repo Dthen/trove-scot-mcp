@@ -1,4 +1,4 @@
-"""Async HTTP client for the Historic Environment Scotland ArcGIS REST API.
+"""Sync HTTP client for the Historic Environment Scotland ArcGIS REST API.
 
 HES exposes a keyless ArcGIS REST endpoint (the backend for trove.scot) with
 over 313,000 heritage records plus designation layers (listed buildings,
@@ -21,12 +21,19 @@ UPPERCASE and ``LIKE`` is case-sensitive; wrap columns in ``UPPER()``.
 
 from __future__ import annotations
 
-import asyncio
+import http.client
+import json
 import math
+import time
+import urllib.error
+import urllib.request
 from typing import Any
+from urllib.request import Request
 
-import httpx
+from trove_scot_mcp.query import encode_query
 
+# HES ArcGIS REST base URL — keyless API (only the UA header; no auth, no
+# pagination params). Verified at tag 692af2a: client sends NO auth headers.
 BASE_URL = "https://inspire.hes.scot/arcgis/rest/services"
 
 # Default request timeout (seconds). The HES server can be slow under load.
@@ -39,6 +46,12 @@ BACKOFF_BASE = 1.0  # seconds; delays are 1s, 2s
 
 # HTTP status codes that warrant a retry.
 RETRYABLE_STATUS = {502, 503}
+
+# Module-level User-Agent — the legacy header LITERAL (0.1.0 is part of the wire
+# string; verified at client.py:235). Version coherence in T10 touches package
+# versions, NOT this UA literal — changing it would drift the API-side identity
+# and no fixture pins a new value.
+UA = "trove-scot-mcp/0.1.0 (Historic Environment Scotland MCP)"
 
 
 class HesError(Exception):
@@ -212,41 +225,43 @@ def enrich_with_latlon(attributes: dict[str, Any]) -> dict[str, Any]:
     return attributes
 
 
-class HesClient:
-    """Async wrapper around the HES ArcGIS REST ``query`` operation.
+def _urlopen(url: str, timeout: float = DEFAULT_TIMEOUT):
+    """Module-level urllib seam — monkeypatch this in T08.
 
-    Construct with no arguments for the live service, or pass a custom
-    ``httpx.AsyncClient`` (e.g. backed by ``httpx.MockTransport``) for tests.
+    §5 seam conversion (R1): folds the R1 family (TimeoutError,
+    http.client.HTTPException, ConnectionResetError) into URLError so the ladder
+    catches them. Documented R2 deviation: http.client.RemoteDisconnected IS an
+    OSError (⊂ ConnectionError) so it is already ladder-retried; this seam also
+    converts HTTPException siblings → URLError, so the port retries some protocol
+    errors legacy did NOT retry. User-visible outcome is friendly-text parity
+    either way (exhaustion or fold → "Error: …").
+    """
+    request = Request(url, headers={"User-Agent": UA})
+    try:
+        return urllib.request.urlopen(request, timeout=timeout)
+    except (TimeoutError, http.client.HTTPException, ConnectionResetError) as e:
+        raise urllib.error.URLError(e) from e
+
+
+# Module-level sleep seam — T08 patches _sleep for backoff tests.
+_sleep = time.sleep
+
+
+class HesClient:
+    """Sync wrapper around the HES ArcGIS REST ``query`` operation.
+
+    Construct with no arguments for the live service.
     """
 
     def __init__(
         self,
         base_url: str = BASE_URL,
-        client: httpx.AsyncClient | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.base_url = base_url
-        if client is not None:
-            self._client = client
-        else:
-            self._client = httpx.AsyncClient(
-                base_url=base_url,
-                timeout=timeout,
-                headers={"User-Agent": "trove-scot-mcp/0.1.0 (Historic Environment Scotland MCP)"},
-            )
-        self._owns_client = client is None
+        self._timeout = timeout
 
-    async def __aenter__(self) -> "HesClient":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.aclose()
-
-    async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
-
-    async def query(
+    def query(
         self,
         layer: str,
         where: str,
@@ -304,7 +319,7 @@ class HesClient:
         else:
             params["returnGeometry"] = "false"
 
-        data = await self._fetch_with_retries(path, params)
+        data = self._fetch_with_retries(path, params)
 
         # ArcGIS returns HTTP 200 with an error body for some failures (e.g.
         # invalid where clauses / unsupported pagination).
@@ -315,12 +330,12 @@ class HesClient:
             raise HesError(f"ArcGIS error {code}: {message}")
         return data
 
-    async def count(self, layer: str, where: str) -> int:
+    def count(self, layer: str, where: str) -> int:
         """Return the number of features matching ``where`` (via ``returnCountOnly``)."""
-        data = await self.query(layer, where, count_only=True)
+        data = self.query(layer, where, count_only=True)
         return int(data.get("count", 0))
 
-    async def fetch_features(
+    def fetch_features(
         self,
         layer: str,
         where: str,
@@ -337,7 +352,7 @@ class HesClient:
         buildings, 10000 for scheduled monuments) — count first with
         :meth:`count` if completeness matters.
         """
-        data = await self.query(
+        data = self.query(
             layer,
             where,
             out_fields=out_fields,
@@ -349,32 +364,39 @@ class HesClient:
         features = data.get("features") or []
         return [f.get("attributes", {}) for f in features if isinstance(f, dict)]
 
-    async def _fetch_with_retries(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        """GET ``path`` with ``params``, retrying transient failures with backoff."""
+    def _fetch_with_retries(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        """GET ``path`` with ``params``, retrying transient failures with backoff.
+
+        Retry ladder (R2, exact — F2-restated): attempts = MAX_RETRIES + 1;
+        before retry N (1-based) ``_sleep(BACKOFF_BASE * attempt)`` → 1s, 2s.
+        """
         last_error: Exception | None = None
+        url = f"{self.base_url}{path}?{encode_query(params)}"
 
         for attempt in range(MAX_RETRIES + 1):
             if attempt > 0:
-                await asyncio.sleep(BACKOFF_BASE * attempt)  # 1s, 2s
+                _sleep(BACKOFF_BASE * attempt)  # 1s, 2s
             try:
-                response = await self._client.get(path, params=params)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+                response = _urlopen(url, self._timeout)
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
                 last_error = exc
                 continue
 
-            if response.status_code in RETRYABLE_STATUS:
-                last_error = HesError(f"HES returned HTTP {response.status_code}")
+            status = response.getcode()
+            if status in RETRYABLE_STATUS:
+                last_error = HesError(f"HES returned HTTP {status}")
                 continue
 
-            if response.status_code != 200:
-                raise HesError(f"HES request failed with HTTP {response.status_code}")
+            if status != 200:
+                raise HesError(f"HES request failed with HTTP {status}")
 
+            body = response.read()
             try:
-                return response.json()
-            except ValueError as exc:
+                return json.loads(body)
+            except (ValueError, json.JSONDecodeError) as exc:
                 raise HesError(
                     "HES returned a non-JSON response — the service may be "
-                    f"overloaded. Raw body start: {response.text[:120]!r}"
+                    f"overloaded. Raw body start: {body[:120]!r}"
                 ) from exc
 
         raise HesError(
