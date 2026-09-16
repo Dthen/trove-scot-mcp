@@ -1,16 +1,77 @@
 """Tests for the Canmore heritage MCP tools (server.py).
 
-The server's module-level ``_client`` is swapped for a HesClient backed by an
-``httpx.MockTransport`` so no live network is used. A request log captures the
-``where``/``geometry``/``outFields`` params so we can assert on query building.
+The server's module-level ``_client`` is swapped for a HesClient whose
+``_urlopen`` seam is replaced by ``install_fake_urlopen`` so no live network
+is used. Each tool's count-then-fetch sequence is exercised by queuing two
+responses; the recorded full URLs are decoded via ``parse_qsl`` for semantic
+parameter comparisons.
+
+Ported from async httpx (tag 692af2a) to sync stdlib urllib. 51 test defs:
+- 12 pure-helper tests (sync, unchanged)
+- 39 transport tests (async -> direct call, MockTransport -> fake-urlopen)
+- 2 parametrized blocks (7 + 6 cases)
+
+Legacy -> new test name mapping (1:1, zero deletions):
+  test_like_term_uppercases_and_wraps            -> test_like_term_uppercases_and_wraps
+  test_build_where_term_only                     -> test_build_where_term_only
+  test_build_where_no_args_matches_all           -> test_build_where_no_args_matches_all
+  test_build_where_all_filters_anded             -> test_build_where_all_filters_anded
+  test_build_where_filters_without_term          -> test_build_where_filters_without_term
+  test_search_builds_correct_where               -> test_search_builds_correct_where
+  test_search_adds_filters_with_and              -> test_search_adds_filters_with_and
+  test_search_return_shape_and_enrichment        -> test_search_return_shape_and_enrichment
+  test_search_truncated_when_over_cap            -> test_search_truncated_when_over_cap
+  test_search_empty_result_friendly_message      -> test_search_empty_result_friendly_message
+  test_get_by_id_returns_enriched_record         -> test_get_by_id_returns_enriched_record
+  test_get_by_id_not_found                       -> test_get_by_id_not_found
+  test_count_returns_total_found                 -> test_count_returns_total_found
+  test_count_no_filters_counts_all               -> test_count_no_filters_counts_all
+  test_count_small_result_no_note                -> test_count_small_result_no_note
+  test_heritage_near_builds_envelope_and_sorts   -> test_heritage_near_builds_envelope_and_sorts
+  test_heritage_near_adds_distance_km            -> test_heritage_near_adds_distance_km
+  test_heritage_near_term_filter                 -> test_heritage_near_term_filter
+  test_heritage_near_truncated_when_over_limit   -> test_heritage_near_truncated_when_over_limit
+  test_heritage_near_limit_respected             -> test_heritage_near_limit_respected
+  test_heritage_near_count_over_cap_truncated_with_cap_note -> test_heritage_near_count_over_cap_truncated_with_cap_note
+  test_heritage_near_count_between_limit_and_cap_raise_limit_note -> test_heritage_near_count_between_limit_and_cap_raise_limit_note
+  test_heritage_near_rejects_zero_radius         -> test_heritage_near_rejects_zero_radius
+  test_heritage_near_rejects_negative_radius     -> test_heritage_near_rejects_negative_radius
+  test_like_term_escapes_apostrophes             -> test_like_term_escapes_apostrophes
+  test_search_with_apostrophe_builds_valid_where -> test_search_with_apostrophe_builds_valid_where
+  test_like_term_escapes_percent                 -> test_like_term_escapes_percent
+  test_like_term_escapes_underscore              -> test_like_term_escapes_underscore
+  test_like_term_escapes_backslash_first         -> test_like_term_escapes_backslash_first
+  test_like_clause_appends_escape_suffix         -> test_like_clause_appends_escape_suffix
+  test_search_with_percent_builds_escaped_where  -> test_search_with_percent_builds_escaped_where
+  test_like_term_escaping_parametrized           -> test_like_term_escaping_parametrized
+  test_like_escaping_is_self_consistent          -> test_like_escaping_is_self_consistent
+  test_search_empty_term_returns_error           -> test_search_empty_term_returns_error
+  test_search_whitespace_term_returns_error      -> test_search_whitespace_term_returns_error
+  test_count_empty_term_returns_error            -> test_count_empty_term_returns_error
+  test_search_http_error_returns_error_string    -> test_search_http_error_returns_error_string
+  test_get_by_id_http_error_returns_error_string -> test_get_by_id_http_error_returns_error_string
+  test_listed_buildings_builds_correct_where     -> test_listed_buildings_builds_correct_where
+  test_listed_buildings_category_validation_rejects_d -> test_listed_buildings_category_validation_rejects_d
+  test_listed_buildings_return_shape_and_enrichment -> test_listed_buildings_return_shape_and_enrichment
+  test_listed_buildings_empty_result_friendly_message -> test_listed_buildings_empty_result_friendly_message
+  test_listed_buildings_http_error_returns_error_string -> test_listed_buildings_http_error_returns_error_string
+  test_scheduled_monuments_builds_correct_where  -> test_scheduled_monuments_builds_correct_where
+  test_scheduled_monuments_return_shape_and_enrichment -> test_scheduled_monuments_return_shape_and_enrichment
+  test_scheduled_monuments_empty_result_friendly_message -> test_scheduled_monuments_empty_result_friendly_message
+  test_scheduled_monuments_http_error_returns_error_string -> test_scheduled_monuments_http_error_returns_error_string
+  test_properties_in_care_builds_correct_where   -> test_properties_in_care_builds_correct_where
+  test_properties_in_care_return_shape_and_enrichment -> test_properties_in_care_return_shape_and_enrichment
+  test_properties_in_care_empty_result_friendly_message -> test_properties_in_care_empty_result_friendly_message
+  test_properties_in_care_http_error_returns_error_string -> test_properties_in_care_http_error_returns_error_string
 """
 
-import httpx
+import urllib.error
+from urllib.parse import parse_qsl, urlsplit
+
 import pytest
 
 import trove_scot_mcp.client as client_mod
-import trove_scot_mcp.server as server_mod
-from trove_scot_mcp.client import HesClient
+from tests.helpers_transport import install_fake_urlopen
 from trove_scot_mcp.server import (
     _build_where,
     _like_clause,
@@ -24,7 +85,7 @@ from trove_scot_mcp.server import (
     search_scheduled_monuments,
 )
 
-# Edinburgh Castle's BNG coords (from RESEARCH-ARCGIS.md) → ~55.95, -3.20.
+# Edinburgh Castle's BNG coords (from RESEARCH-ARCGIS.md) -> ~55.95, -3.20.
 EDINBURGH_CASTLE = {
     "CANMOREID": 52068,
     "NMRSNAME": "EDINBURGH CASTLE",
@@ -40,30 +101,17 @@ EDINBURGH_CASTLE = {
 }
 
 
-def install_mock_client(monkeypatch, handler):
-    """Replace server._client with a MockTransport-backed HesClient; return the log."""
-    log: list[dict] = []
-
-    def wrapped(request: httpx.Request) -> httpx.Response:
-        log.append(dict(request.url.params))
-        return handler(request)
-
-    transport = httpx.MockTransport(wrapped)
-    http = httpx.AsyncClient(
-        base_url="https://inspire.hes.scot/arcgis/rest/services", transport=transport
-    )
-    monkeypatch.setattr(server_mod, "_client", HesClient(client=http))
-    return log
-
-
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    """Make retry backoff instantaneous so error-path tests run fast."""
+    """Replace ``_sleep`` with a recorder so retry delays are pinned, not slept."""
+    sleeps = []
+    monkeypatch.setattr(client_mod, "_sleep", lambda s: sleeps.append(s))
+    return sleeps
 
-    async def _instant(_seconds):
-        return None
 
-    monkeypatch.setattr(client_mod.asyncio, "sleep", _instant)
+def _params(url):
+    """Decode a recorded full URL into a query-param dict (semantic compare)."""
+    return dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
 
 
 # -- pure helpers ----------------------------------------------------------
@@ -106,58 +154,46 @@ def test_build_where_filters_without_term():
 # -- search_heritage -------------------------------------------------------
 
 
-async def test_search_builds_correct_where(monkeypatch):
-    log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 1}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
-        ),
-    )
-    result = await search_heritage("edinburgh castle")
+def test_search_builds_correct_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    result = search_heritage("edinburgh castle")
 
-    # First call is the count, second is the fetch — both carry the same where.
-    wheres = [entry["where"] for entry in log]
-    assert wheres[0] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
-    assert wheres[1] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
+    urls = state["urls"]
+    params0 = _params(urls[0])
+    params1 = _params(urls[1])
+    # First call is the count, second is the fetch -- both carry the same where.
+    assert params0["where"] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
+    assert params1["where"] == f"UPPER(NMRSNAME) LIKE '%EDINBURGH CASTLE%'{ESC}"
     # Count call uses returnCountOnly; fetch call uses named outFields (not *).
-    assert log[0]["returnCountOnly"] == "true"
-    assert log[1]["outFields"] != "*"
-    assert "NMRSNAME" in log[1]["outFields"]
+    assert params0["returnCountOnly"] == "true"
+    assert params1["outFields"] != "*"
+    assert "NMRSNAME" in params1["outFields"]
     assert isinstance(result, dict)
 
 
-async def test_search_adds_filters_with_and(monkeypatch):
-    log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 1}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
-        ),
-    )
-    await search_heritage("castle", sitetype="fort", council="edinburgh", broadclass="defence")
+def test_search_adds_filters_with_and(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    search_heritage("castle", sitetype="fort", council="edinburgh", broadclass="defence")
     expected = (
         f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC} AND UPPER(SITETYPE) LIKE '%FORT%'{ESC} AND "
         f"UPPER(COUNCIL) LIKE '%EDINBURGH%'{ESC} AND UPPER(BROADCLASS) LIKE '%DEFENCE%'{ESC}"
     )
-    assert log[0]["where"] == expected
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == expected
 
 
-async def test_search_return_shape_and_enrichment(monkeypatch):
-    install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 1}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
-        ),
-    )
-    result = await search_heritage("edinburgh castle", limit=50)
+def test_search_return_shape_and_enrichment(monkeypatch):
+    install_fake_urlopen(monkeypatch, [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    result = search_heritage("edinburgh castle", limit=50)
 
     assert result["count"] == 1
     assert result["total_found"] == 1
@@ -170,18 +206,13 @@ async def test_search_return_shape_and_enrichment(monkeypatch):
     assert site["lon"] == pytest.approx(-3.20, abs=0.01)
 
 
-async def test_search_truncated_when_over_cap(monkeypatch):
+def test_search_truncated_when_over_cap(monkeypatch):
     # Count reports 5000 (> 1000 cap); fetch returns 1000 features.
-    install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 5000}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": {"CANMOREID": i, "NMRSNAME": "X"}} for i in range(1000)]},
-        ),
-    )
-    result = await search_heritage("castle", limit=50)
+    install_fake_urlopen(monkeypatch, [
+        (200, {"count": 5000}),
+        (200, {"features": [{"attributes": {"CANMOREID": i, "NMRSNAME": "X"}} for i in range(1000)]}),
+    ])
+    result = search_heritage("castle", limit=50)
 
     assert result["total_found"] == 5000
     assert result["truncated"] is True
@@ -190,12 +221,9 @@ async def test_search_truncated_when_over_cap(monkeypatch):
     assert "1000" in result["note"]  # mentions the cap
 
 
-async def test_search_empty_result_friendly_message(monkeypatch):
-    install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(200, json={"count": 0}),
-    )
-    result = await search_heritage("zzznotarealsite")
+def test_search_empty_result_friendly_message(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = search_heritage("zzznotarealsite")
     assert isinstance(result, str)
     assert "No heritage sites matched" in result
 
@@ -203,59 +231,51 @@ async def test_search_empty_result_friendly_message(monkeypatch):
 # -- get_heritage_by_id ----------------------------------------------------
 
 
-async def test_get_by_id_returns_enriched_record(monkeypatch):
-    log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200, json={"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}
-        ),
-    )
-    result = await get_heritage_by_id(52068)
+def test_get_by_id_returns_enriched_record(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    result = get_heritage_by_id(52068)
 
-    assert log[0]["where"] == "CANMOREID=52068"
-    assert log[0]["outFields"] == "*"  # full record
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == "CANMOREID=52068"
+    assert params0["outFields"] == "*"  # full record
     assert isinstance(result, dict)
     assert result["NMRSNAME"] == "EDINBURGH CASTLE"
     assert result["lat"] == pytest.approx(55.95, abs=0.01)
     assert result["lon"] == pytest.approx(-3.20, abs=0.01)
 
 
-async def test_get_by_id_not_found(monkeypatch):
-    install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"features": []})
-    )
-    result = await get_heritage_by_id(999999999)
+def test_get_by_id_not_found(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"features": []})])
+    result = get_heritage_by_id(999999999)
     assert result == "Error: no heritage site found with Canmore ID 999999999"
 
 
 # -- count_heritage --------------------------------------------------------
 
 
-async def test_count_returns_total_found(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 7098})
-    )
-    result = await count_heritage(term="castle")
-    assert log[0]["returnCountOnly"] == "true"
-    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
+def test_count_returns_total_found(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 7098})])
+    result = count_heritage(term="castle")
+    params0 = _params(state["urls"][0])
+    assert params0["returnCountOnly"] == "true"
+    assert params0["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
     assert result["total_found"] == 7098
-    assert "note" in result  # > 1000 cap → warning present
+    assert "note" in result  # > 1000 cap -> warning present
 
 
-async def test_count_no_filters_counts_all(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 313456})
-    )
-    result = await count_heritage()
-    assert log[0]["where"] == "1=1"
+def test_count_no_filters_counts_all(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 313456})])
+    result = count_heritage()
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == "1=1"
     assert result["total_found"] == 313456
 
 
-async def test_count_small_result_no_note(monkeypatch):
-    install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 42})
-    )
-    result = await count_heritage(term="zzz")
+def test_count_small_result_no_note(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"count": 42})])
+    result = count_heritage(term="zzz")
     assert result == {"total_found": 42}
 
 
@@ -263,22 +283,20 @@ async def test_count_small_result_no_note(monkeypatch):
 
 
 def _near_handler(features, count=None):
-    """Mock handler for heritage_near: count query → count, fetch → features.
+    """Fake responses for heritage_near: count query -> count, fetch -> features.
 
     ``count`` defaults to the number of features so the count-first query and
     the fetch agree.
     """
     if count is None:
         count = len(features)
-    return lambda req: httpx.Response(
-        200,
-        json={"count": count}
-        if req.url.params.get("returnCountOnly") == "true"
-        else {"features": [{"attributes": dict(f)} for f in features]},
-    )
+    return [
+        (200, {"count": count}),
+        (200, {"features": [{"attributes": dict(f)} for f in features]}),
+    ]
 
 
-async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
+def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
     # Two sites: one near Edinburgh (52068) and one far away (Aberdeen-ish BNG).
     far = {
         "CANMOREID": 123,
@@ -290,21 +308,21 @@ async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
         "XCOORD": 394000,
         "YCOORD": 806000,  # ~57.14, -2.10 (Aberdeen area)
     }
-    log = install_mock_client(
-        monkeypatch, _near_handler([far, EDINBURGH_CASTLE])
-    )
-    # Edinburgh Castle lat/lon ≈ 55.95, -3.20.
-    result = await heritage_near(55.95, -3.20, radius_km=2.0)
+    state = install_fake_urlopen(monkeypatch, _near_handler([far, EDINBURGH_CASTLE]))
+    # Edinburgh Castle lat/lon ~ 55.95, -3.20.
+    result = heritage_near(55.95, -3.20, radius_km=2.0)
 
-    # First call is the count (returnCountOnly), second is the fetch — both carry
-    # the envelope geometry as WGS84 with the right type/SR.
-    assert log[0]["returnCountOnly"] == "true"
-    assert log[1]["geometryType"] == "esriGeometryEnvelope"
-    assert log[1]["inSR"] == "4326"
-    min_lon, min_lat, max_lon, max_lat = (float(x) for x in log[1]["geometry"].split(","))
+    urls = state["urls"]
+    params0 = _params(urls[0])
+    params1 = _params(urls[1])
+    # First call is the count (returnCountOnly), second is the fetch.
+    assert params0["returnCountOnly"] == "true"
+    assert params1["geometryType"] == "esriGeometryEnvelope"
+    assert params1["inSR"] == "4326"
+    min_lon, min_lat, max_lon, max_lat = (float(x) for x in params1["geometry"].split(","))
     assert min_lon < -3.20 < max_lon
     assert min_lat < 55.95 < max_lat
-    # ~2km radius → lat delta ≈ 2/111 ≈ 0.018.
+    # ~2km radius -> lat delta ~ 2/111 ~ 0.018.
     assert (max_lat - min_lat) == pytest.approx(2 * 2.0 / 111.0, rel=0.01)
 
     # Sorted nearest-first; Edinburgh Castle (the actual point) comes first.
@@ -316,24 +334,25 @@ async def test_heritage_near_builds_envelope_and_sorts(monkeypatch):
     assert result["sites"][1]["CANMOREID"] == 123
 
 
-async def test_heritage_near_adds_distance_km(monkeypatch):
-    install_mock_client(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
-    result = await heritage_near(55.95, -3.20, radius_km=1.0)
+def test_heritage_near_adds_distance_km(monkeypatch):
+    install_fake_urlopen(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
+    result = heritage_near(55.95, -3.20, radius_km=1.0)
     site = result["sites"][0]
     assert "distance_km" in site
-    # Castle is essentially at the query point → very small distance.
+    # Castle is essentially at the query point -> very small distance.
     assert site["distance_km"] < 1.0
 
 
-async def test_heritage_near_term_filter(monkeypatch):
-    log = install_mock_client(monkeypatch, _near_handler([]))
-    await heritage_near(55.95, -3.20, term="castle")
-    # Both the count and the fetch carry the (escaped) term filter.
-    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
+def test_heritage_near_term_filter(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _near_handler([]))
+    heritage_near(55.95, -3.20, term="castle")
+    # Count query only (count=0 -> early return).
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == f"UPPER(NMRSNAME) LIKE '%CASTLE%'{ESC}"
 
 
-async def test_heritage_near_truncated_when_over_limit(monkeypatch):
-    # 5 geocoded sites but limit=2 → truncated, total_found reflects all 5.
+def test_heritage_near_truncated_when_over_limit(monkeypatch):
+    # 5 geocoded sites but limit=2 -> truncated, total_found reflects all 5.
     def _site(i):
         return {
             "CANMOREID": i,
@@ -342,28 +361,26 @@ async def test_heritage_near_truncated_when_over_limit(monkeypatch):
             "YCOORD": 673497 + i,
         }
 
-    install_mock_client(
-        monkeypatch, _near_handler([_site(i) for i in range(5)], count=5)
-    )
-    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=2)
+    install_fake_urlopen(monkeypatch, _near_handler([_site(i) for i in range(5)], count=5))
+    result = heritage_near(55.95, -3.20, radius_km=1.0, limit=2)
 
     assert result["count"] == 2
     assert result["total_found"] == 5
     assert result["truncated"] is True
     assert len(result["sites"]) == 2
     assert "note" in result
-    # Count is between limit and the 1000 cap → "raise limit" note, not cap note.
+    # Count is between limit and the 1000 cap -> "raise limit" note, not cap note.
     assert "Raise 'limit'" in result["note"]
 
 
-async def test_heritage_near_limit_respected(monkeypatch):
-    install_mock_client(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
-    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+def test_heritage_near_limit_respected(monkeypatch):
+    install_fake_urlopen(monkeypatch, _near_handler([EDINBURGH_CASTLE]))
+    result = heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
     assert result["total_found"] == 1
     assert result["truncated"] is False
 
 
-async def test_heritage_near_count_over_cap_truncated_with_cap_note(monkeypatch):
+def test_heritage_near_count_over_cap_truncated_with_cap_note(monkeypatch):
     # Count reports 5000 (> 1000 cap); fetch returns 1000 features. truncated
     # must be True and the note must mention the 1000 cap + approximate ordering.
     def _site(i):
@@ -374,11 +391,8 @@ async def test_heritage_near_count_over_cap_truncated_with_cap_note(monkeypatch)
             "YCOORD": 673497 + (i % 40),
         }
 
-    install_mock_client(
-        monkeypatch,
-        _near_handler([_site(i) for i in range(1000)], count=5000),
-    )
-    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+    install_fake_urlopen(monkeypatch, _near_handler([_site(i) for i in range(1000)], count=5000))
+    result = heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
 
     assert result["total_found"] == 5000
     assert result["truncated"] is True
@@ -387,8 +401,8 @@ async def test_heritage_near_count_over_cap_truncated_with_cap_note(monkeypatch)
     assert "approximate" in result["note"]  # honest about nearest-first ordering
 
 
-async def test_heritage_near_count_between_limit_and_cap_raise_limit_note(monkeypatch):
-    # Count = 200 (<= 1000 cap but > limit=50) → raise-limit note, not cap note.
+def test_heritage_near_count_between_limit_and_cap_raise_limit_note(monkeypatch):
+    # Count = 200 (<= 1000 cap but > limit=50) -> raise-limit note, not cap note.
     def _site(i):
         return {
             "CANMOREID": i,
@@ -397,11 +411,8 @@ async def test_heritage_near_count_between_limit_and_cap_raise_limit_note(monkey
             "YCOORD": 673497 + (i % 40),
         }
 
-    install_mock_client(
-        monkeypatch,
-        _near_handler([_site(i) for i in range(200)], count=200),
-    )
-    result = await heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
+    install_fake_urlopen(monkeypatch, _near_handler([_site(i) for i in range(200)], count=200))
+    result = heritage_near(55.95, -3.20, radius_km=1.0, limit=50)
 
     assert result["total_found"] == 200
     assert result["truncated"] is True
@@ -410,18 +421,18 @@ async def test_heritage_near_count_between_limit_and_cap_raise_limit_note(monkey
     assert "1000" not in result["note"]  # not the cap note
 
 
-async def test_heritage_near_rejects_zero_radius(monkeypatch):
-    log = install_mock_client(monkeypatch, _near_handler([]))
-    result = await heritage_near(55.9, -3.2, radius_km=0)
+def test_heritage_near_rejects_zero_radius(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _near_handler([]))
+    result = heritage_near(55.9, -3.2, radius_km=0)
     assert result == "Error: radius_km must be a positive number"
-    assert log == []  # short-circuited before any query
+    assert state["urls"] == []  # short-circuited before any query
 
 
-async def test_heritage_near_rejects_negative_radius(monkeypatch):
-    log = install_mock_client(monkeypatch, _near_handler([]))
-    result = await heritage_near(55.9, -3.2, radius_km=-5)
+def test_heritage_near_rejects_negative_radius(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _near_handler([]))
+    result = heritage_near(55.9, -3.2, radius_km=-5)
     assert result == "Error: radius_km must be a positive number"
-    assert log == []  # short-circuited before any query
+    assert state["urls"] == []  # short-circuited before any query
 
 
 # -- apostrophe escaping (FIX 2) -------------------------------------------
@@ -432,19 +443,15 @@ def test_like_term_escapes_apostrophes():
     assert _like_term("Queen Mary's Thorn") == "'%QUEEN MARY''S THORN%'"
 
 
-async def test_search_with_apostrophe_builds_valid_where(monkeypatch):
-    log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 1}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
-        ),
-    )
-    result = await search_heritage("St Mary's")
+def test_search_with_apostrophe_builds_valid_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    result = search_heritage("St Mary's")
     # Balanced quotes: the apostrophe is doubled, not left raw.
-    assert log[0]["where"] == f"UPPER(NMRSNAME) LIKE '%ST MARY''S%'{ESC}"
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == f"UPPER(NMRSNAME) LIKE '%ST MARY''S%'{ESC}"
     assert isinstance(result, dict)
 
 
@@ -473,21 +480,17 @@ def test_like_clause_appends_escape_suffix():
     )
 
 
-async def test_search_with_percent_builds_escaped_where(monkeypatch):
-    log = install_mock_client(
-        monkeypatch,
-        lambda req: httpx.Response(
-            200,
-            json={"count": 1}
-            if req.url.params.get("returnCountOnly") == "true"
-            else {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]},
-        ),
-    )
-    await search_heritage("100%")
-    assert log[0]["where"] == "UPPER(NMRSNAME) LIKE '%100\\%%' ESCAPE '\\'"
+def test_search_with_percent_builds_escaped_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(EDINBURGH_CASTLE)}]}),
+    ])
+    search_heritage("100%")
+    params0 = _params(state["urls"][0])
+    assert params0["where"] == "UPPER(NMRSNAME) LIKE '%100\\%%' ESCAPE '\\'"
 
 
-# -- LIKE escaping: parametrized + self-consistency (backslash correctness) ---
+# -- LIKE escaping: parametrized + self-consistency (backslash correctness) --
 
 # One literal backslash, built via chr() to avoid any source-level ambiguity
 # about Python string escapes (e.g. "a\\b" vs a raw tab from "a\tb").
@@ -504,7 +507,7 @@ _BS = chr(92)
         ("a_b", "'%A\\_B%'"),
         # Apostrophe is doubled (standard SQL literal escaping).
         ("St Mary's", "'%ST MARY''S%'"),
-        # ONE literal backslash becomes the escaped pair \\ — which, under
+        # ONE literal backslash becomes the escaped pair \\ -- which, under
         # ESCAPE '\', denotes exactly one literal backslash in the data.
         ("a" + _BS + "b", "'%A" + _BS + _BS + "B%'"),
         # Two literal backslashes become four (each one doubled).
@@ -521,8 +524,8 @@ def test_like_term_escaping_parametrized(term, expected_pattern):
 def _sqlite_matches(clause: str, rows: list[str]) -> list[str]:
     """Return which of ``rows`` satisfy ``clause`` (a full WHERE predicate).
 
-    Uses a real SQL engine (sqlite) executing the clause INLINE — exactly as the
-    ArcGIS server receives it — so SQL-literal escaping ('' → ') and the LIKE
+    Uses a real SQL engine (sqlite) executing the clause INLINE -- exactly as the
+    ArcGIS server receives it -- so SQL-literal escaping ('' -> ') and the LIKE
     ESCAPE mechanism are both honoured the way the live server applies them.
     """
     import sqlite3
@@ -548,7 +551,7 @@ def _sqlite_matches(clause: str, rows: list[str]) -> list[str]:
     ],
 )
 def test_like_escaping_is_self_consistent(term):
-    """The pattern _like_term builds, interpreted with ESCAPE '\\', must match the
+    """The pattern _like_term builds, interpreted with ESCAPE '\', must match the
     literal term (uppercased) and must NOT match a near-miss neighbour.
 
     This is the regression guard for the backslash bug: a single-backslash term
@@ -572,67 +575,55 @@ def test_like_escaping_is_self_consistent(term):
     assert target in matched, f"{clause!r} should match literal {target!r}"
     assert neighbour not in matched, (
         f"{clause!r} must not match near-miss {neighbour!r} "
-        f"(escaping is too permissive)"
+        "(escaping is too permissive)"
     )
 
 
 # -- empty/whitespace term guard (FIX 3) -----------------------------------
 
 
-async def test_search_empty_term_returns_error(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await search_heritage("")
+def test_search_empty_term_returns_error(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = search_heritage("")
     assert result == "Error: please provide a search term"
-    assert log == []  # no query issued
+    assert state["urls"] == []  # no query issued
 
 
-async def test_search_whitespace_term_returns_error(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await search_heritage("   ")
+def test_search_whitespace_term_returns_error(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = search_heritage("   ")
     assert result == "Error: please provide a search term"
-    assert log == []
+    assert state["urls"] == []
 
 
-async def test_count_empty_term_returns_error(monkeypatch):
-    log = install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await count_heritage(term="")
+def test_count_empty_term_returns_error(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = count_heritage(term="")
     assert isinstance(result, str)
     assert result.startswith("Error:")
-    assert log == []
+    assert state["urls"] == []
 
 
 # -- error handling --------------------------------------------------------
 
 
-async def test_search_http_error_returns_error_string(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
-
-    install_mock_client(monkeypatch, handler)
-    result = await search_heritage("castle")
+def test_search_http_error_returns_error_string(monkeypatch):
+    install_fake_urlopen(monkeypatch, [urllib.error.URLError("boom")] * 3)
+    result = search_heritage("castle")
     assert isinstance(result, str)
     assert result.startswith("Error: ")
 
 
-async def test_get_by_id_http_error_returns_error_string(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
-
-    install_mock_client(monkeypatch, handler)
-    result = await get_heritage_by_id(52068)
+def test_get_by_id_http_error_returns_error_string(monkeypatch):
+    install_fake_urlopen(monkeypatch, [urllib.error.URLError("boom")] * 3)
+    result = get_heritage_by_id(52068)
     assert isinstance(result, str)
     assert result.startswith("Error: ")
 
 
 # -- designation layers ----------------------------------------------------
 
-# Sample designation records (BNG X/Y coords → enrich_with_latlon adds lat/lon).
+# Sample designation records (BNG X/Y coords -> enrich_with_latlon adds lat/lon).
 LISTED_BUILDING = {
     "DES_TITLE": "Duke of York Statue, Edinburgh Castle Esplanade, Edinburgh",
     "ENT_TITLE": "Duke of York Statue",
@@ -668,45 +659,45 @@ PROPERTY_IN_CARE = {
 
 
 def _count_or_features(record):
-    """Handler factory: count→{count:1}, fetch→one feature with ``record`` attrs."""
-    return lambda req: httpx.Response(
-        200,
-        json={"count": 1}
-        if req.url.params.get("returnCountOnly") == "true"
-        else {"features": [{"attributes": dict(record)}]},
-    )
+    """Responses: count->{count:1}, fetch->one feature with ``record`` attrs."""
+    return [
+        (200, {"count": 1}),
+        (200, {"features": [{"attributes": dict(record)}]}),
+    ]
 
 
 # -- search_listed_buildings ------------------------------------------------
 
 
-async def test_listed_buildings_builds_correct_where(monkeypatch):
-    log = install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
-    await search_listed_buildings("castle", category="a", local_authority="edinburgh")
+def test_listed_buildings_builds_correct_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _count_or_features(LISTED_BUILDING))
+    search_listed_buildings("castle", category="a", local_authority="edinburgh")
 
     expected = (
         f"UPPER(DES_TITLE) LIKE '%CASTLE%'{ESC} AND CATEGORY = 'A' AND "
         f"UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
+    params0 = _params(state["urls"][0])
+    params1 = _params(state["urls"][1])
     # Count call and fetch call both carry the same where.
-    assert log[0]["where"] == expected
-    assert log[1]["where"] == expected
-    assert log[0]["returnCountOnly"] == "true"
-    assert "DES_TITLE" in log[1]["outFields"]
-    assert "CATEGORY" in log[1]["outFields"]
+    assert params0["where"] == expected
+    assert params1["where"] == expected
+    assert params0["returnCountOnly"] == "true"
+    assert "DES_TITLE" in params1["outFields"]
+    assert "CATEGORY" in params1["outFields"]
 
 
-async def test_listed_buildings_category_validation_rejects_d(monkeypatch):
+def test_listed_buildings_category_validation_rejects_d(monkeypatch):
     # No network call should be made for an invalid category.
-    log = install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
-    result = await search_listed_buildings("castle", category="D")
+    state = install_fake_urlopen(monkeypatch, _count_or_features(LISTED_BUILDING))
+    result = search_listed_buildings("castle", category="D")
     assert result == "Error: category must be A, B, or C"
-    assert log == []  # short-circuited before any query
+    assert state["urls"] == []  # short-circuited before any query
 
 
-async def test_listed_buildings_return_shape_and_enrichment(monkeypatch):
-    install_mock_client(monkeypatch, _count_or_features(LISTED_BUILDING))
-    result = await search_listed_buildings("castle", limit=50)
+def test_listed_buildings_return_shape_and_enrichment(monkeypatch):
+    install_fake_urlopen(monkeypatch, _count_or_features(LISTED_BUILDING))
+    result = search_listed_buildings("castle", limit=50)
 
     assert result["count"] == 1
     assert result["total_found"] == 1
@@ -719,21 +710,16 @@ async def test_listed_buildings_return_shape_and_enrichment(monkeypatch):
     assert building["lon"] == pytest.approx(-3.20, abs=0.01)
 
 
-async def test_listed_buildings_empty_result_friendly_message(monkeypatch):
-    install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await search_listed_buildings("zzznotarealbuilding")
+def test_listed_buildings_empty_result_friendly_message(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = search_listed_buildings("zzznotarealbuilding")
     assert isinstance(result, str)
     assert "No listed buildings matched" in result
 
 
-async def test_listed_buildings_http_error_returns_error_string(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
-
-    install_mock_client(monkeypatch, handler)
-    result = await search_listed_buildings("castle")
+def test_listed_buildings_http_error_returns_error_string(monkeypatch):
+    install_fake_urlopen(monkeypatch, [urllib.error.URLError("boom")] * 3)
+    result = search_listed_buildings("castle")
     assert isinstance(result, str)
     assert result.startswith("Error: ")
 
@@ -741,23 +727,25 @@ async def test_listed_buildings_http_error_returns_error_string(monkeypatch):
 # -- search_scheduled_monuments --------------------------------------------
 
 
-async def test_scheduled_monuments_builds_correct_where(monkeypatch):
-    log = install_mock_client(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
-    await search_scheduled_monuments("castle", local_authority="edinburgh")
+def test_scheduled_monuments_builds_correct_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
+    search_scheduled_monuments("castle", local_authority="edinburgh")
 
     expected = (
         f"UPPER(DES_TITLE) LIKE '%CASTLE%'{ESC} AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
-    assert log[0]["where"] == expected
-    assert log[1]["where"] == expected
-    assert log[0]["returnCountOnly"] == "true"
-    assert "DES_TITLE" in log[1]["outFields"]
-    assert "AREA" in log[1]["outFields"]
+    params0 = _params(state["urls"][0])
+    params1 = _params(state["urls"][1])
+    assert params0["where"] == expected
+    assert params1["where"] == expected
+    assert params0["returnCountOnly"] == "true"
+    assert "DES_TITLE" in params1["outFields"]
+    assert "AREA" in params1["outFields"]
 
 
-async def test_scheduled_monuments_return_shape_and_enrichment(monkeypatch):
-    install_mock_client(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
-    result = await search_scheduled_monuments("castle", limit=50)
+def test_scheduled_monuments_return_shape_and_enrichment(monkeypatch):
+    install_fake_urlopen(monkeypatch, _count_or_features(SCHEDULED_MONUMENT))
+    result = search_scheduled_monuments("castle", limit=50)
 
     assert result["count"] == 1
     assert result["total_found"] == 1
@@ -769,21 +757,16 @@ async def test_scheduled_monuments_return_shape_and_enrichment(monkeypatch):
     assert monument["lon"] == pytest.approx(-3.20, abs=0.01)
 
 
-async def test_scheduled_monuments_empty_result_friendly_message(monkeypatch):
-    install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await search_scheduled_monuments("zzznotarealmonument")
+def test_scheduled_monuments_empty_result_friendly_message(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = search_scheduled_monuments("zzznotarealmonument")
     assert isinstance(result, str)
     assert "No scheduled monuments matched" in result
 
 
-async def test_scheduled_monuments_http_error_returns_error_string(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
-
-    install_mock_client(monkeypatch, handler)
-    result = await search_scheduled_monuments("castle")
+def test_scheduled_monuments_http_error_returns_error_string(monkeypatch):
+    install_fake_urlopen(monkeypatch, [urllib.error.URLError("boom")] * 3)
+    result = search_scheduled_monuments("castle")
     assert isinstance(result, str)
     assert result.startswith("Error: ")
 
@@ -791,22 +774,24 @@ async def test_scheduled_monuments_http_error_returns_error_string(monkeypatch):
 # -- list_properties_in_care ------------------------------------------------
 
 
-async def test_properties_in_care_builds_correct_where(monkeypatch):
-    log = install_mock_client(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
-    await list_properties_in_care(local_authority="edinburgh", term="castle")
+def test_properties_in_care_builds_correct_where(monkeypatch):
+    state = install_fake_urlopen(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
+    list_properties_in_care(local_authority="edinburgh", term="castle")
 
     expected = (
         f"UPPER(PIC_NAME) LIKE '%CASTLE%'{ESC} AND UPPER(LOCAL_AUTH) LIKE '%EDINBURGH%'{ESC}"
     )
-    assert log[0]["where"] == expected
-    assert log[1]["where"] == expected
-    assert log[0]["returnCountOnly"] == "true"
-    assert "PIC_NAME" in log[1]["outFields"]
+    params0 = _params(state["urls"][0])
+    params1 = _params(state["urls"][1])
+    assert params0["where"] == expected
+    assert params1["where"] == expected
+    assert params0["returnCountOnly"] == "true"
+    assert "PIC_NAME" in params1["outFields"]
 
 
-async def test_properties_in_care_return_shape_and_enrichment(monkeypatch):
-    install_mock_client(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
-    result = await list_properties_in_care(limit=100)
+def test_properties_in_care_return_shape_and_enrichment(monkeypatch):
+    install_fake_urlopen(monkeypatch, _count_or_features(PROPERTY_IN_CARE))
+    result = list_properties_in_care(limit=100)
 
     assert result["count"] == 1
     assert result["total_found"] == 1
@@ -818,20 +803,15 @@ async def test_properties_in_care_return_shape_and_enrichment(monkeypatch):
     assert prop["lon"] == pytest.approx(-3.20, abs=0.01)
 
 
-async def test_properties_in_care_empty_result_friendly_message(monkeypatch):
-    install_mock_client(
-        monkeypatch, lambda req: httpx.Response(200, json={"count": 0})
-    )
-    result = await list_properties_in_care(term="zzznotarealproperty")
+def test_properties_in_care_empty_result_friendly_message(monkeypatch):
+    install_fake_urlopen(monkeypatch, [(200, {"count": 0})])
+    result = list_properties_in_care(term="zzznotarealproperty")
     assert isinstance(result, str)
     assert "No properties in care matched" in result
 
 
-async def test_properties_in_care_http_error_returns_error_string(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
-
-    install_mock_client(monkeypatch, handler)
-    result = await list_properties_in_care()
+def test_properties_in_care_http_error_returns_error_string(monkeypatch):
+    install_fake_urlopen(monkeypatch, [urllib.error.URLError("boom")] * 3)
+    result = list_properties_in_care()
     assert isinstance(result, str)
     assert result.startswith("Error: ")
