@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 # --- Module constants (REFERENCE §7 pinned-v2-production-spawn pattern) ---
-PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/trove-scot-mcp/bin/python3"
+PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/trove-scot-mcp-v2/bin/python3"
 SERVER_ARGS = ["-m", "trove_scot_mcp.server"]
 REPO = "/home/kimbo/projects/trove-scot-mcp"
 
