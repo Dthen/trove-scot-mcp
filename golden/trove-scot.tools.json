@@ -1,0 +1,471 @@
+[
+  {
+    "name": "search_heritage",
+    "description": "Search Scotland's National Record of the Historic Environment (Canmore) — 313K+ heritage sites including castles, monuments, churches, archaeological sites, and historic buildings. Search by name, with optional filters for site type, council area, and broad classification. Returns site names, types, locations (lat/lon), and trove.scot links.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "type": "string",
+          "description": "Name text to search for (matched case-insensitively against the\nsite name, e.g. \"Edinburgh Castle\", \"castle\", \"standing stone\")."
+        },
+        "sitetype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional site-type filter, substring-matched (e.g. \"castle\",\n\"church\", \"fort\")."
+        },
+        "council": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional council-area filter, substring-matched (e.g.\n\"edinburgh\", \"fife\", \"glasgow\"). Absorbs the \", CITY OF\" suffix used\nfor cities."
+        },
+        "broadclass": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional broad-classification filter, substring-matched\n(e.g. \"defence\", \"religious\", \"domestic\")."
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "description": "Maximum number of sites to return (default 50)."
+        }
+      },
+      "required": [
+        "term"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "get_heritage_by_id",
+    "description": "Get full details of a specific heritage site by its Canmore ID. Returns the complete record including name, type, classification, location (lat/lon), grid reference, and trove.scot link.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "canmore_id": {
+          "type": "integer",
+          "description": "The stable Canmore ID of the site (e.g. 52068 for Edinburgh\nCastle). This is the number at the end of a trove.scot/place/{id} URL."
+        }
+      },
+      "required": [
+        "canmore_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "count_heritage",
+    "description": "Count how many heritage sites match a search, without fetching the records. Useful to check if a query is too broad (results cap at 1000) before searching.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional name text to match against the site name."
+        },
+        "sitetype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional site-type filter, substring-matched."
+        },
+        "council": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional council-area filter, substring-matched."
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "heritage_near",
+    "description": "Find heritage sites near a geographic point (lat/lon in WGS84). Builds a bounding box around the point and returns matching sites sorted by distance. Optional name filter.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "type": "number",
+          "description": "Latitude of the centre point in decimal degrees (WGS84)."
+        },
+        "lon": {
+          "type": "number",
+          "description": "Longitude of the centre point in decimal degrees (WGS84)."
+        },
+        "radius_km": {
+          "default": 1.0,
+          "type": "number",
+          "description": "Search radius in kilometres (default 1.0). Used to build a\nsquare bounding box around the point."
+        },
+        "term": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional name text to filter results by (substring match)."
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "description": "Maximum number of sites to return (default 50)."
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "search_listed_buildings",
+    "description": "Search Scotland's listed buildings — 67K+ buildings of special architectural or historic interest. Filter by name/address, listing category (A, B, or C — A being highest significance), and local authority. Returns building name/address, category grade, date designated, location (lat/lon), and a link.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional name/address text to search for (matched\ncase-insensitively against the building's name and address, e.g.\n\"castle\", \"Edinburgh\", \"church\")."
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional listing grade filter — exactly \"A\", \"B\", or \"C\"\n(case-insensitive). A is the highest significance."
+        },
+        "local_authority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"edinburgh\", \"fife\", \"glasgow\")."
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "description": "Maximum number of buildings to return (default 50)."
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "search_scheduled_monuments",
+    "description": "Search Scotland's scheduled monuments — nationally important archaeological sites and historic monuments protected by law. Filter by name and local authority. Returns monument name, class, area, location (lat/lon), and a link.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional name text to search for (matched case-insensitively\nagainst the monument name, e.g. \"castle\", \"broch\", \"standing stone\")."
+        },
+        "local_authority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"highland\", \"orkney\", \"fife\")."
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "description": "Maximum number of monuments to return (default 50)."
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "list_properties_in_care",
+    "description": "List Historic Environment Scotland properties in care — the castles, abbeys, standing stones, and other monuments that HES manages on behalf of the nation (e.g. Edinburgh Castle, Melrose Abbey, Callanish Stones). Filter by name or local authority.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "local_authority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"edinburgh\", \"highland\", \"fife\")."
+        },
+        "term": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional name text to search for (matched case-insensitively\nagainst the property name, e.g. \"castle\", \"abbey\", \"stones\")."
+        },
+        "limit": {
+          "default": 100,
+          "type": "integer",
+          "description": "Maximum number of properties to return (default 100 — this is a\nsmall layer of ~300 HES-managed sites)."
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  }
+]
