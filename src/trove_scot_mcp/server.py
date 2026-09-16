@@ -26,10 +26,12 @@ Server quirks handled here (see RESEARCH-ARCGIS.md):
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import sys
-from typing import Any
+import urllib.error
+from typing import Any, cast
 
 from trove_scot_mcp.client import HesClient, HesError, enrich_with_latlon
 
@@ -75,7 +77,7 @@ _client = HesClient()
 
 
 # ---------------------------------------------------------------------------
-# Query-building helpers (DEAD CODE this commit — T07 converts to sync)
+# Query-building helpers
 # ---------------------------------------------------------------------------
 
 
@@ -173,15 +175,11 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Tool handlers — DEAD CODE this commit
-# ---------------------------------------------------------------------------
-# The async handlers below are unreachable: the §1 loop's tools/call branch
-# routes to a placeholder until T07 lands the sync dispatch. They stay as
-# async def because T07 converts them; the loop cannot reach them.
+# Tool handlers (sync; dispatched by handle_call via the §1 loop)
 # ---------------------------------------------------------------------------
 
 
-async def search_heritage(
+def search_heritage(
     term: str,
     sitetype: str | None = None,
     council: str | None = None,
@@ -214,7 +212,7 @@ async def search_heritage(
         if not term:
             return "Error: please provide a search term"
         where = _build_where(term, sitetype=sitetype, council=council, broadclass=broadclass)
-        total_found = await _client.count(CANMORE_LAYER, where)
+        total_found = _client.count(CANMORE_LAYER, where)
         if total_found == 0:
             return (
                 f"No heritage sites matched term={term!r}"
@@ -224,7 +222,7 @@ async def search_heritage(
                 + ". Try a broader term or fewer filters."
             )
 
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             CANMORE_LAYER, where, out_fields=_SEARCH_FIELDS
         )
         for f in features:
@@ -252,11 +250,11 @@ async def search_heritage(
                     f"returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
+def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
     """Get full details of a specific heritage site by its Canmore ID. Returns the complete record including name, type, classification, location (lat/lon), grid reference, and trove.scot link.
 
     Args:
@@ -267,7 +265,7 @@ async def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
     ``Error:`` string if no site has that ID or the request fails.
     """
     try:
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             CANMORE_LAYER, f"CANMOREID={int(canmore_id)}", out_fields="*"
         )
         if not features:
@@ -275,11 +273,11 @@ async def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
         record = features[0]
         enrich_with_latlon(record)
         return record
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def count_heritage(
+def count_heritage(
     term: str | None = None,
     sitetype: str | None = None,
     council: str | None = None,
@@ -300,7 +298,7 @@ async def count_heritage(
         if term is not None and not term.strip():
             return "Error: please provide a search term (or omit term to count all records)"
         where = _build_where(term, sitetype=sitetype, council=council)
-        total_found = await _client.count(CANMORE_LAYER, where)
+        total_found = _client.count(CANMORE_LAYER, where)
         out: dict[str, Any] = {"total_found": total_found}
         if total_found > CANMORE_ROW_CAP:
             out["note"] = (
@@ -308,11 +306,11 @@ async def count_heritage(
                 "a search would be truncated. Narrow the query for complete results."
             )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def heritage_near(
+def heritage_near(
     lat: float,
     lon: float,
     radius_km: float = 1.0,
@@ -354,7 +352,7 @@ async def heritage_near(
 
         where = _like_clause("NMRSNAME", term) if term else "1=1"
 
-        count_data = await _client.query(
+        count_data = _client.query(
             CANMORE_LAYER,
             where,
             count_only=True,
@@ -371,7 +369,7 @@ async def heritage_near(
                 "sites": [],
             }
 
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             CANMORE_LAYER,
             where,
             out_fields=_NEAR_FIELDS,
@@ -413,11 +411,11 @@ async def heritage_near(
                     "to see more."
                 )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def search_listed_buildings(
+def search_listed_buildings(
     term: str | None = None,
     category: str | None = None,
     local_authority: str | None = None,
@@ -455,7 +453,7 @@ async def search_listed_buildings(
             clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
-        total_found = await _client.count(LISTED_BUILDINGS_LAYER, where)
+        total_found = _client.count(LISTED_BUILDINGS_LAYER, where)
         if total_found == 0:
             return (
                 f"No listed buildings matched term={term!r}"
@@ -464,7 +462,7 @@ async def search_listed_buildings(
                 + ". Try a broader term or fewer filters."
             )
 
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             LISTED_BUILDINGS_LAYER, where, out_fields=_LISTED_BUILDING_FIELDS
         )
         for f in features:
@@ -492,11 +490,11 @@ async def search_listed_buildings(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def search_scheduled_monuments(
+def search_scheduled_monuments(
     term: str | None = None,
     local_authority: str | None = None,
     limit: int = 50,
@@ -525,7 +523,7 @@ async def search_scheduled_monuments(
             clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
-        total_found = await _client.count(SCHEDULED_MONUMENTS_LAYER, where)
+        total_found = _client.count(SCHEDULED_MONUMENTS_LAYER, where)
         if total_found == 0:
             return (
                 f"No scheduled monuments matched term={term!r}"
@@ -533,7 +531,7 @@ async def search_scheduled_monuments(
                 + ". Try a broader term or fewer filters."
             )
 
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             SCHEDULED_MONUMENTS_LAYER, where, out_fields=_SCHEDULED_MONUMENT_FIELDS
         )
         for f in features:
@@ -561,11 +559,11 @@ async def search_scheduled_monuments(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-async def list_properties_in_care(
+def list_properties_in_care(
     local_authority: str | None = None,
     term: str | None = None,
     limit: int = 100,
@@ -595,7 +593,7 @@ async def list_properties_in_care(
             clauses.append(_like_clause("LOCAL_AUTH", local_authority))
         where = " AND ".join(clauses) if clauses else "1=1"
 
-        total_found = await _client.count(PROPERTIES_IN_CARE_LAYER, where)
+        total_found = _client.count(PROPERTIES_IN_CARE_LAYER, where)
         if total_found == 0:
             return (
                 f"No properties in care matched term={term!r}"
@@ -603,7 +601,7 @@ async def list_properties_in_care(
                 + ". Try a broader term or fewer filters."
             )
 
-        features = await _client.fetch_features(
+        features = _client.fetch_features(
             PROPERTIES_IN_CARE_LAYER, where, out_fields=_PROPERTIES_IN_CARE_FIELDS
         )
         for f in features:
@@ -630,7 +628,7 @@ async def list_properties_in_care(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, ValueError, KeyError) as e:
+    except (HesError, urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
@@ -907,6 +905,69 @@ TOOLS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# handle_call — REFERENCE §5 dispatch + text encoding
+# ---------------------------------------------------------------------------
+
+# DEVIATION from REFERENCE §5 (justified: legacy tools return bare str on empty-match/error
+# paths — golden/legacy-behavior.json pins them; passthrough verbatim per B.1 precedent; dict
+# successes use fastmcp-era compact non-ascii-preserving JSON per §5's B.4 derivation rule)
+def _encode_result(result):
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+
+
+# Frozen dispatch table (7 tools). kwargs built explicitly from the provided arguments
+# dict — unknown keys are ignored (fastmcp leniency: extra keys must not TypeError).
+def handle_call(name, arguments):
+    args = arguments or {}
+    if name == "search_heritage":
+        return search_heritage(
+            term=cast(str, args.get("term")),
+            sitetype=cast(str, args.get("sitetype")) if args.get("sitetype") is not None else None,
+            council=cast(str, args.get("council")) if args.get("council") is not None else None,
+            broadclass=cast(str, args.get("broadclass")) if args.get("broadclass") is not None else None,
+            limit=int(args.get("limit", 50)),
+        )
+    if name == "get_heritage_by_id":
+        return get_heritage_by_id(canmore_id=int(args.get("canmore_id", 0)))
+    if name == "count_heritage":
+        return count_heritage(
+            term=cast(str, args.get("term")) if args.get("term") is not None else None,
+            sitetype=cast(str, args.get("sitetype")) if args.get("sitetype") is not None else None,
+            council=cast(str, args.get("council")) if args.get("council") is not None else None,
+        )
+    if name == "heritage_near":
+        return heritage_near(
+            lat=float(args.get("lat", 0)),
+            lon=float(args.get("lon", 0)),
+            radius_km=float(args.get("radius_km", 1.0)),
+            term=cast(str, args.get("term")) if args.get("term") is not None else None,
+            limit=int(args.get("limit", 50)),
+        )
+    if name == "search_listed_buildings":
+        return search_listed_buildings(
+            term=cast(str, args.get("term")) if args.get("term") is not None else None,
+            category=cast(str, args.get("category")) if args.get("category") is not None else None,
+            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
+            limit=int(args.get("limit", 50)),
+        )
+    if name == "search_scheduled_monuments":
+        return search_scheduled_monuments(
+            term=cast(str, args.get("term")) if args.get("term") is not None else None,
+            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
+            limit=int(args.get("limit", 50)),
+        )
+    if name == "list_properties_in_care":
+        return list_properties_in_care(
+            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
+            term=cast(str, args.get("term")) if args.get("term") is not None else None,
+            limit=int(args.get("limit", 100)),
+        )
+    return {"error": f"Unknown tool: {name}"}
+
+
 # ===========================================================================
 # Main loop (REFERENCE §1–§3, §6–§7)
 # ===========================================================================
@@ -932,16 +993,15 @@ def main():
             # §4
             send({"jsonrpc":"2.0","id":rid,"result":era_result({"tools":TOOLS})})
         elif method == "tools/call":
-            # §5 — F6: -32602 params guard mandatory; handler bodies land in T07
+            # §5 — F6: -32602 params guard mandatory; handler dispatch via handle_call
             params = req.get("params")
             if not isinstance(params, dict) or not isinstance(params.get("name"), str):
                 send({"jsonrpc":"2.0","id":rid,"error":{"code":-32602,
                     "message":"missing required param: params (with string 'name')"}})
                 continue
-            # T07: handler dispatch placeholder (tests 7,8,9 stay red until T07)
-            result = {"error": "not yet ported"}
+            result = handle_call(params["name"], params.get("arguments", {}))
             is_err = isinstance(result, dict) and "error" in result
-            payload: dict = {"content": [{"type": "text", "text": json.dumps(result, separators=(",",":"), ensure_ascii=False)}]}
+            payload: dict = {"content": [{"type": "text", "text": _encode_result(result)}]}
             if is_err:
                 payload["isError"] = True
             send({"jsonrpc":"2.0","id":rid,"result":era_result(payload)})
