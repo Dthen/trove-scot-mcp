@@ -1,12 +1,19 @@
-"""FastMCP server exposing Scotland's historic environment as MCP tools.
+#!/usr/bin/env python3
+"""trove-scot-mcp: stateless 2026-07-28 era MCP server (stdio loop).
 
-Data comes from the Historic Environment Scotland (HES) ArcGIS REST API, the
-backend for trove.scot — over 313,000 heritage records (castles, monuments,
-listed buildings, archaeological sites) plus designation layers (listed
-buildings, scheduled monuments, properties in care).
+REFERENCE §1–§3, §4 (TOOLS literal), §6–§7 copied verbatim from
+/home/kimbo/.hermes/plans/mcp-2x-migration/REFERENCE.md per PLAN D1
+("copied from REFERENCE.md, never re-derived"). §5 (tools/call handler
+bodies) lands in T07 — the dispatch here owns only the -32602 params
+guard (F6) and routes every call to a placeholder.
 
-These tools query the Canmore layer (Scotland's National Record of the Historic
-Environment, NRHE) via :class:`trove_scot_mcp.client.HesClient`.
+Data comes from the Historic Environment Scotland (HES) ArcGIS REST API,
+the backend for trove.scot — over 313,000 heritage records (castles,
+monuments, listed buildings, archaeological sites) plus designation layers
+(listed buildings, scheduled monuments, properties in care).
+
+These tools query the Canmore layer (Scotland's National Record of the
+Historic Environment, NRHE) via :class:`trove_scot_mcp.client.HesClient`.
 
 Server quirks handled here (see RESEARCH-ARCGIS.md):
 - Text data is UPPERCASE and ``LIKE`` is case-sensitive, so every text filter
@@ -19,12 +26,10 @@ Server quirks handled here (see RESEARCH-ARCGIS.md):
 
 from __future__ import annotations
 
+import json
 import math
-from contextlib import asynccontextmanager
+import sys
 from typing import Any
-
-import httpx
-from fastmcp import FastMCP
 
 from trove_scot_mcp.client import HesClient, HesError, enrich_with_latlon
 
@@ -63,37 +68,19 @@ _SCHEDULED_MONUMENT_FIELDS = (
 )
 _PROPERTIES_IN_CARE_FIELDS = "PIC_ID,PIC_NAME,LOCAL_AUTH,LINK,X,Y"
 
-
-@asynccontextmanager
-async def _lifespan(app: FastMCP):
-    """Manage the shared client's lifecycle: yield on startup, close on shutdown."""
-    try:
-        yield
-    finally:
-        await _client.aclose()
-
-
-mcp = FastMCP(
-    "trove-scot",
-    instructions=(
-        "Search Scotland's historic environment — 313K+ heritage records "
-        "(castles, monuments, listed buildings, archaeological sites) via "
-        "Historic Environment Scotland"
-    ),
-    lifespan=_lifespan,
-)
+# lifespan() deleted (was: close the async HTTP client on shutdown); sync urllib holds no state (B.4, tag 692af2a verified)
 
 # Single shared client instance (module-level).
 _client = HesClient()
 
 
 # ---------------------------------------------------------------------------
-# Query-building helpers
+# Query-building helpers (DEAD CODE this commit — T07 converts to sync)
 # ---------------------------------------------------------------------------
 
 
 # Suffix appended to every ``LIKE`` clause so the backslash is treated as the
-# escape character. Without it, the ``\%``/``\_`` sequences that ``_like_term``
+# escape character. Without it, the ``\``%``/``\``_`` sequences that ``_like_term``
 # emits would be read as a literal backslash followed by a wildcard, which is
 # wrong. Verified against the live ArcGIS API: with ``ESCAPE '\'`` a search for
 # ``100%`` matches only records literally containing "100%", and ``a_b`` matches
@@ -110,8 +97,8 @@ def _like_term(term: str) -> str:
 
     Escaping (all literal, so user input can never inject a wildcard or break
     the SQL):
-    - ``\\`` → ``\\\\`` first, so the backslashes we add below aren't doubled.
-    - ``%`` → ``\\%`` and ``_`` → ``\\_`` so a literal percent/underscore in the
+    - ``\`` → ``\\`` first, so the backslashes we add below aren't doubled.
+    - ``%`` → ``\%`` and ``_`` → ``\_`` so a literal percent/underscore in the
       term matches literally instead of acting as a SQL wildcard (paired with
       ``_LIKE_ESCAPE_SUFFIX`` on the clause). Without this, ``"100%"`` matched
       every record containing "100".
@@ -139,7 +126,7 @@ def _like_term(term: str) -> str:
 
 
 def _like_clause(column: str, term: str) -> str:
-    """Build a full ``UPPER(column) LIKE '%TERM%' ESCAPE '\\'`` clause.
+    """Build a full ``UPPER(column) LIKE '%TERM%' ESCAPE '\'`` clause.
 
     Centralises the column-wrapping, pattern building, and the ``ESCAPE`` suffix
     so every text filter escapes user-supplied wildcards consistently.
@@ -186,11 +173,14 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# Tool handlers — DEAD CODE this commit
+# ---------------------------------------------------------------------------
+# The async handlers below are unreachable: the §1 loop's tools/call branch
+# routes to a placeholder until T07 lands the sync dispatch. They stay as
+# async def because T07 converts them; the loop cannot reach them.
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
 async def search_heritage(
     term: str,
     sitetype: str | None = None,
@@ -262,11 +252,10 @@ async def search_heritage(
                     f"returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
     """Get full details of a specific heritage site by its Canmore ID. Returns the complete record including name, type, classification, location (lat/lon), grid reference, and trove.scot link.
 
@@ -286,11 +275,10 @@ async def get_heritage_by_id(canmore_id: int) -> dict[str, Any] | str:
         record = features[0]
         enrich_with_latlon(record)
         return record
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def count_heritage(
     term: str | None = None,
     sitetype: str | None = None,
@@ -320,11 +308,10 @@ async def count_heritage(
                 "a search would be truncated. Narrow the query for complete results."
             )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def heritage_near(
     lat: float,
     lon: float,
@@ -357,12 +344,8 @@ async def heritage_near(
         if radius_km <= 0:
             return "Error: radius_km must be a positive number"
 
-        # Rough degree deltas for a square envelope around the point. One degree
-        # of latitude ≈ 111 km; longitude degrees shrink with cos(latitude).
         lat_delta = radius_km / 111.0
         cos_lat = math.cos(math.radians(lat))
-        # Guard against division by ~0 near the poles (not relevant for Scotland
-        # but keeps the helper robust).
         lon_delta = radius_km / (111.0 * cos_lat) if cos_lat > 1e-6 else 360.0
         envelope = (
             f"{lon - lon_delta},{lat - lat_delta},"
@@ -371,9 +354,6 @@ async def heritage_near(
 
         where = _like_clause("NMRSNAME", term) if term else "1=1"
 
-        # Count first (same where + geometry) to learn the TRUE number of matches
-        # in the area. The fetch below silently caps at CANMORE_ROW_CAP, so
-        # len(features) alone can't tell "exactly 1000" from "capped at 1000".
         count_data = await _client.query(
             CANMORE_LAYER,
             where,
@@ -402,8 +382,6 @@ async def heritage_near(
         for f in features:
             enrich_with_latlon(f)
 
-        # Sort client-side by true great-circle distance; drop records we could
-        # not geocode (no lat/lon) since they cannot be ranked.
         geocoded = [f for f in features if "lat" in f and "lon" in f]
         for f in geocoded:
             f["distance_km"] = round(_haversine_km(lat, lon, f["lat"], f["lon"]), 3)
@@ -435,11 +413,10 @@ async def heritage_near(
                     "to see more."
                 )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def search_listed_buildings(
     term: str | None = None,
     category: str | None = None,
@@ -515,11 +492,10 @@ async def search_listed_buildings(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def search_scheduled_monuments(
     term: str | None = None,
     local_authority: str | None = None,
@@ -585,11 +561,10 @@ async def search_scheduled_monuments(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-@mcp.tool()
 async def list_properties_in_care(
     local_authority: str | None = None,
     term: str | None = None,
@@ -655,13 +630,331 @@ async def list_properties_in_care(
                     f"were returned (limit={limit}). Raise 'limit' to see more."
                 )
         return out
-    except (HesError, httpx.HTTPError, ValueError, KeyError) as e:
+    except (HesError, ValueError, KeyError) as e:
         return f"Error: {e}"
 
 
-def main() -> None:
-    """Entry point for running the server over stdio."""
-    mcp.run()
+# ===========================================================================
+# REFERENCE §1 — framing
+# ===========================================================================
+
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(errors="replace")
+
+
+def send(resp):
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+
+
+# ===========================================================================
+# REFERENCE §1 — era constants
+# ===========================================================================
+
+ERA_VERSION = "2026-07-28"
+SERVER_INFO = {"name": "trove-scot", "version": "0.2.0"}  # bumped to 0.3.0 in T10 (single commit owns versions)
+ERA_RESULT_FIELDS = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private"}
+RESULT_META = {"io.modelcontextprotocol/serverInfo": SERVER_INFO}
+
+
+def era_result(payload):
+    """A result carrying the era-strict fields D3 mandates on every response."""
+    out = dict(payload)
+    out.update(ERA_RESULT_FIELDS)
+    out["_meta"] = RESULT_META
+    return out
+
+
+# ===========================================================================
+# TOOLS literal from golden (REFERENCE §4, D4 byte-freeze)
+# Generated from golden/trove-scot.tools.json
+# sha256: c9075ff88dd67090ec3b8af1f778002d253ec162a2c989bed7d3a17d1157b140
+# outputSchema and _meta stripped per F3.
+# ===========================================================================
+
+TOOLS = [
+    {
+        "name": "search_heritage",
+        "description": "Search Scotland's National Record of the Historic Environment (Canmore) — 313K+ heritage sites including castles, monuments, churches, archaeological sites, and historic buildings. Search by name, with optional filters for site type, council area, and broad classification. Returns site names, types, locations (lat/lon), and trove.scot links.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "term": {
+                    "type": "string",
+                    "description": "Name text to search for (matched case-insensitively against the\nsite name, e.g. \"Edinburgh Castle\", \"castle\", \"standing stone\")."
+                },
+                "sitetype": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional site-type filter, substring-matched (e.g. \"castle\",\n\"church\", \"fort\")."
+                },
+                "council": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional council-area filter, substring-matched (e.g.\n\"edinburgh\", \"fife\", \"glasgow\"). Absorbs the \", CITY OF\" suffix used\nfor cities."
+                },
+                "broadclass": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional broad-classification filter, substring-matched\n(e.g. \"defence\", \"religious\", \"domestic\")."
+                },
+                "limit": {
+                    "default": 50,
+                    "type": "integer",
+                    "description": "Maximum number of sites to return (default 50)."
+                }
+            },
+            "required": ["term"],
+            "type": "object"
+        }
+    },
+    {
+        "name": "get_heritage_by_id",
+        "description": "Get full details of a specific heritage site by its Canmore ID. Returns the complete record including name, type, classification, location (lat/lon), grid reference, and trove.scot link.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "canmore_id": {
+                    "type": "integer",
+                    "description": "The stable Canmore ID of the site (e.g. 52068 for Edinburgh\nCastle). This is the number at the end of a trove.scot/place/{id} URL."
+                }
+            },
+            "required": ["canmore_id"],
+            "type": "object"
+        }
+    },
+    {
+        "name": "count_heritage",
+        "description": "Count how many heritage sites match a search, without fetching the records. Useful to check if a query is too broad (results cap at 1000) before searching.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "term": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional name text to match against the site name."
+                },
+                "sitetype": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional site-type filter, substring-matched."
+                },
+                "council": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional council-area filter, substring-matched."
+                }
+            },
+            "type": "object"
+        }
+    },
+    {
+        "name": "heritage_near",
+        "description": "Find heritage sites near a geographic point (lat/lon in WGS84). Builds a bounding box around the point and returns matching sites sorted by distance. Optional name filter.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "lat": {
+                    "type": "number",
+                    "description": "Latitude of the centre point in decimal degrees (WGS84)."
+                },
+                "lon": {
+                    "type": "number",
+                    "description": "Longitude of the centre point in decimal degrees (WGS84)."
+                },
+                "radius_km": {
+                    "default": 1.0,
+                    "type": "number",
+                    "description": "Search radius in kilometres (default 1.0). Used to build a\nsquare bounding box around the point."
+                },
+                "term": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional name text to filter results by (substring match)."
+                },
+                "limit": {
+                    "default": 50,
+                    "type": "integer",
+                    "description": "Maximum number of sites to return (default 50)."
+                }
+            },
+            "required": ["lat", "lon"],
+            "type": "object"
+        }
+    },
+    {
+        "name": "search_listed_buildings",
+        "description": "Search Scotland's listed buildings — 67K+ buildings of special architectural or historic interest. Filter by name/address, listing category (A, B, or C — A being highest significance), and local authority. Returns building name/address, category grade, date designated, location (lat/lon), and a link.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "term": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional name/address text to search for (matched\ncase-insensitively against the building's name and address, e.g.\n\"castle\", \"Edinburgh\", \"church\")."
+                },
+                "category": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional listing grade filter — exactly \"A\", \"B\", or \"C\"\n(case-insensitive). A is the highest significance."
+                },
+                "local_authority": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"edinburgh\", \"fife\", \"glasgow\")."
+                },
+                "limit": {
+                    "default": 50,
+                    "type": "integer",
+                    "description": "Maximum number of buildings to return (default 50)."
+                }
+            },
+            "type": "object"
+        }
+    },
+    {
+        "name": "search_scheduled_monuments",
+        "description": "Search Scotland's scheduled monuments — nationally important archaeological sites and historic monuments protected by law. Filter by name and local authority. Returns monument name, class, area, location (lat/lon), and a link.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "term": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional name text to search for (matched case-insensitively\nagainst the monument name, e.g. \"castle\", \"broch\", \"standing stone\")."
+                },
+                "local_authority": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"highland\", \"orkney\", \"fife\")."
+                },
+                "limit": {
+                    "default": 50,
+                    "type": "integer",
+                    "description": "Maximum number of monuments to return (default 50)."
+                }
+            },
+            "type": "object"
+        }
+    },
+    {
+        "name": "list_properties_in_care",
+        "description": "List Historic Environment Scotland properties in care — the castles, abbeys, standing stones, and other monuments that HES manages on behalf of the nation (e.g. Edinburgh Castle, Melrose Abbey, Callanish Stones). Filter by name or local authority.",
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": {
+                "local_authority": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional council-area filter, substring-matched\ncase-insensitively (e.g. \"edinburgh\", \"highland\", \"fife\")."
+                },
+                "term": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ],
+                    "default": None,
+                    "description": "Optional name text to search for (matched case-insensitively\nagainst the property name, e.g. \"castle\", \"abbey\", \"stones\")."
+                },
+                "limit": {
+                    "default": 100,
+                    "type": "integer",
+                    "description": "Maximum number of properties to return (default 100 — this is a\nsmall layer of ~300 HES-managed sites)."
+                }
+            },
+            "type": "object"
+        }
+    }
+]
+
+
+# ===========================================================================
+# Main loop (REFERENCE §1–§3, §6–§7)
+# ===========================================================================
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line: continue
+        try: req = json.loads(line)
+        except Exception: continue
+        if not isinstance(req, dict): continue
+        rid = req.get("id")
+        method = req.get("method")
+        if not isinstance(method, str): method = ""
+
+        if method == "server/discover":
+            # §2
+            send({"jsonrpc":"2.0","id":rid,"result":era_result({
+                "supportedVersions":[ERA_VERSION],
+                "capabilities":{"tools":{}}})})
+        elif method == "tools/list":
+            # §4
+            send({"jsonrpc":"2.0","id":rid,"result":era_result({"tools":TOOLS})})
+        elif method == "tools/call":
+            # §5 — F6: -32602 params guard mandatory; handler bodies land in T07
+            params = req.get("params")
+            if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+                send({"jsonrpc":"2.0","id":rid,"error":{"code":-32602,
+                    "message":"missing required param: params (with string 'name')"}})
+                continue
+            # T07: handler dispatch placeholder (tests 7,8,9 stay red until T07)
+            result = {"error": "not yet ported"}
+            is_err = isinstance(result, dict) and "error" in result
+            payload: dict = {"content": [{"type": "text", "text": json.dumps(result, separators=(",",":"), ensure_ascii=False)}]}
+            if is_err:
+                payload["isError"] = True
+            send({"jsonrpc":"2.0","id":rid,"result":era_result(payload)})
+        elif method == "ping":
+            # §6
+            send({"jsonrpc":"2.0","id":rid,"result":{}})
+        elif method.startswith("notifications/"):
+            # §6 — swallow
+            pass
+        else:
+            # §3 catch-all (includes legacy initialize)
+            if rid is None and "id" not in req: continue
+            send({"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":f"Method not found: {method}"}})
 
 
 if __name__ == "__main__":
