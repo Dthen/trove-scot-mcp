@@ -26,7 +26,6 @@ Server quirks handled here (see RESEARCH-ARCGIS.md):
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 import sys
@@ -920,52 +919,80 @@ def _encode_result(result):
 
 # Frozen dispatch table (7 tools). kwargs built explicitly from the provided arguments
 # dict — unknown keys are ignored (fastmcp leniency: extra keys must not TypeError).
+def _coerce_argument(key: str, value: Any, converter):
+    try:
+        return converter(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key!r}: {exc}") from exc
+
+
 def handle_call(name, arguments):
-    args = arguments or {}
-    if name == "search_heritage":
-        return search_heritage(
-            term=cast(str, args.get("term")),
-            sitetype=cast(str, args.get("sitetype")) if args.get("sitetype") is not None else None,
-            council=cast(str, args.get("council")) if args.get("council") is not None else None,
-            broadclass=cast(str, args.get("broadclass")) if args.get("broadclass") is not None else None,
-            limit=int(args.get("limit", 50)),
-        )
-    if name == "get_heritage_by_id":
-        return get_heritage_by_id(canmore_id=int(args.get("canmore_id", 0)))
-    if name == "count_heritage":
-        return count_heritage(
-            term=cast(str, args.get("term")) if args.get("term") is not None else None,
-            sitetype=cast(str, args.get("sitetype")) if args.get("sitetype") is not None else None,
-            council=cast(str, args.get("council")) if args.get("council") is not None else None,
-        )
-    if name == "heritage_near":
-        return heritage_near(
-            lat=float(args.get("lat", 0)),
-            lon=float(args.get("lon", 0)),
-            radius_km=float(args.get("radius_km", 1.0)),
-            term=cast(str, args.get("term")) if args.get("term") is not None else None,
-            limit=int(args.get("limit", 50)),
-        )
-    if name == "search_listed_buildings":
-        return search_listed_buildings(
-            term=cast(str, args.get("term")) if args.get("term") is not None else None,
-            category=cast(str, args.get("category")) if args.get("category") is not None else None,
-            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
-            limit=int(args.get("limit", 50)),
-        )
-    if name == "search_scheduled_monuments":
-        return search_scheduled_monuments(
-            term=cast(str, args.get("term")) if args.get("term") is not None else None,
-            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
-            limit=int(args.get("limit", 50)),
-        )
-    if name == "list_properties_in_care":
-        return list_properties_in_care(
-            local_authority=cast(str, args.get("local_authority")) if args.get("local_authority") is not None else None,
-            term=cast(str, args.get("term")) if args.get("term") is not None else None,
-            limit=int(args.get("limit", 100)),
-        )
-    return {"error": f"Unknown tool: {name}"}
+    if not isinstance(arguments, dict):
+        return {"error": "Invalid arguments: arguments must be an object"}
+
+    try:
+        if name == "search_heritage":
+            if "term" not in arguments:
+                return {"error": "Invalid arguments: missing required argument 'term'"}
+            return search_heritage(
+                term=cast(str, arguments.get("term")),
+                sitetype=cast(str, arguments.get("sitetype")) if arguments.get("sitetype") is not None else None,
+                council=cast(str, arguments.get("council")) if arguments.get("council") is not None else None,
+                broadclass=cast(str, arguments.get("broadclass")) if arguments.get("broadclass") is not None else None,
+                limit=_coerce_argument("limit", arguments.get("limit", 50), int),
+            )
+        if name == "get_heritage_by_id":
+            if "canmore_id" not in arguments:
+                return {"error": "Invalid arguments: missing required argument 'canmore_id'"}
+            return get_heritage_by_id(
+                canmore_id=_coerce_argument(
+                    "canmore_id", arguments["canmore_id"], int
+                )
+            )
+        if name == "count_heritage":
+            return count_heritage(
+                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                sitetype=cast(str, arguments.get("sitetype")) if arguments.get("sitetype") is not None else None,
+                council=cast(str, arguments.get("council")) if arguments.get("council") is not None else None,
+            )
+        if name == "heritage_near":
+            missing = [key for key in ("lat", "lon") if key not in arguments]
+            if missing:
+                joined = ", ".join(repr(key) for key in missing)
+                return {"error": f"Invalid arguments: missing required argument {joined}"}
+            return heritage_near(
+                lat=_coerce_argument("lat", arguments["lat"], float),
+                lon=_coerce_argument("lon", arguments["lon"], float),
+                radius_km=_coerce_argument(
+                    "radius_km", arguments.get("radius_km", 1.0), float
+                ),
+                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                limit=_coerce_argument("limit", arguments.get("limit", 50), int),
+            )
+        if name == "search_listed_buildings":
+            return search_listed_buildings(
+                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                category=cast(str, arguments.get("category")) if arguments.get("category") is not None else None,
+                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
+                limit=_coerce_argument("limit", arguments.get("limit", 50), int),
+            )
+        if name == "search_scheduled_monuments":
+            return search_scheduled_monuments(
+                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
+                limit=_coerce_argument("limit", arguments.get("limit", 50), int),
+            )
+        if name == "list_properties_in_care":
+            return list_properties_in_care(
+                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
+                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                limit=_coerce_argument(
+                    "limit", arguments.get("limit", 100), int
+                ),
+            )
+        return {"error": f"Unknown tool: {name}"}
+    except (TypeError, ValueError) as exc:
+        return {"error": f"Invalid arguments: {exc}"}
 
 
 # ===========================================================================
@@ -980,6 +1007,9 @@ def main():
         try: req = json.loads(line)
         except Exception: continue
         if not isinstance(req, dict): continue
+        # REFERENCE §1: absence of the id key means notification silence. An
+        # explicit id member (including null) is echoed verbatim by each branch.
+        if "id" not in req: continue
         rid = req.get("id")
         method = req.get("method")
         if not isinstance(method, str): method = ""
@@ -999,12 +1029,15 @@ def main():
                 send({"jsonrpc":"2.0","id":rid,"error":{"code":-32602,
                     "message":"missing required param: params (with string 'name')"}})
                 continue
-            result = handle_call(params["name"], params.get("arguments", {}))
-            is_err = isinstance(result, dict) and "error" in result
-            payload: dict = {"content": [{"type": "text", "text": _encode_result(result)}]}
-            if is_err:
-                payload["isError"] = True
-            send({"jsonrpc":"2.0","id":rid,"result":era_result(payload)})
+            try:
+                result = handle_call(params["name"], params.get("arguments", {}))
+                is_err = isinstance(result, dict) and "error" in result
+                payload: dict = {"content": [{"type": "text", "text": _encode_result(result)}]}
+                if is_err:
+                    payload["isError"] = True
+                send({"jsonrpc":"2.0","id":rid,"result":era_result(payload)})
+            except Exception as e:
+                send({"jsonrpc":"2.0","id":rid,"error":{"code":-32603,"message":str(e)}})
         elif method == "ping":
             # §6
             send({"jsonrpc":"2.0","id":rid,"result":{}})

@@ -11,6 +11,8 @@ import select
 import subprocess
 import sys
 
+import pytest
+
 # --- Module constants (REFERENCE §7 pinned-v2-production-spawn pattern) ---
 PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/trove-scot-mcp-v2/bin/python3"
 SERVER_ARGS = ["-m", "trove_scot_mcp.server"]
@@ -254,6 +256,55 @@ def test_tools_call_missing_params_is_32602():
         p.wait(timeout=5)
 
 
+@pytest.mark.parametrize(
+    "tool_name,arguments,message_fragment",
+    [
+        ("search_heritage", {}, "term"),
+        ("heritage_near", {"lat": "not-a-number", "lon": 0}, "lat"),
+        ("heritage_near", {"lat": 55.95, "lon": 0, "limit": "bad"}, "limit"),
+        ("get_heritage_by_id", {"canmore_id": "bad"}, "canmore_id"),
+        ("heritage_near", {"lon": 0}, "lat"),
+        ("heritage_near", {"lat": 55.95}, "lon"),
+        ("get_heritage_by_id", {}, "canmore_id"),
+        ("heritage_near", ["not", "an", "object"], "object"),
+    ],
+)
+def test_malformed_tool_arguments_return_validation_error_and_keep_server_alive(
+    tool_name, arguments, message_fragment
+):
+    """Schema/coercion failures are tool errors, never process-killing exceptions."""
+    p = spawn()
+    try:
+        resp = rpc(
+            p,
+            {
+                "jsonrpc": "2.0",
+                "id": 101,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            },
+        )
+        assert resp is not None, "malformed tools/call timed out"
+        assert resp["id"] == 101
+        assert "error" not in resp
+        assert resp["result"]["isError"] is True
+        text = resp["result"]["content"][0]["text"]
+        assert message_fragment in text
+        assert resp["result"]["resultType"] == "complete"
+        assert resp["result"]["ttlMs"] == 0
+        assert resp["result"]["cacheScope"] == "private"
+
+        alive = rpc(p, {"jsonrpc": "2.0", "id": 102, "method": "ping"})
+        assert alive is not None
+        assert alive["id"] == 102
+        assert alive["result"] == {}
+        assert p.poll() is None
+    finally:
+        p.stdin.close()
+        if p.poll() is None:
+            p.wait(timeout=5)
+
+
 def test_ping_answers_empty():
     """§6: ping id → result == {}."""
     p = spawn()
@@ -293,6 +344,47 @@ def test_id_less_unknown_is_silent():
         assert resp is not None, "§1: discover after id-less timed out"
         assert resp["id"] == 14, "§1: reply must carry discover id, not a phantom response"
     finally:
+        p.stdin.close()
+        p.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "method", ["server/discover", "tools/list", "tools/call", "ping"]
+)
+def test_id_less_known_methods_are_silent(method):
+    """§1: every no-id known method is a notification, including tools/call."""
+    params = (
+        {"name": "search_heritage", "arguments": {"term": ""}}
+        if method == "tools/call"
+        else None
+    )
+    request = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        request["params"] = params
+
+    p = spawn()
+    try:
+        send(p, request)
+        resp = rpc(p, {"jsonrpc": "2.0", "id": 141, "method": "ping"})
+        assert resp is not None
+        assert resp["id"] == 141
+        assert p.poll() is None
+    finally:
+        assert p.stdin is not None
+        p.stdin.close()
+        p.wait(timeout=5)
+
+
+def test_explicit_null_id_known_method_preserves_response():
+    """§1: an explicit JSON-RPC id member, including null, is echoed verbatim."""
+    p = spawn()
+    try:
+        resp = rpc(p, {"jsonrpc": "2.0", "id": None, "method": "ping"})
+        assert resp is not None
+        assert resp["id"] is None
+        assert resp["result"] == {}
+    finally:
+        assert p.stdin is not None
         p.stdin.close()
         p.wait(timeout=5)
 
