@@ -92,7 +92,7 @@ _LIKE_ESCAPE_SUFFIX = " ESCAPE '\\'"
 
 
 def _like_term(term: str) -> str:
-    """Uppercase a search term and wrap it as a SQL ``LIKE`` wildcard pattern.
+    r"""Uppercase a search term and wrap it as a SQL ``LIKE`` wildcard pattern.
 
     Canmore text data is stored in UPPERCASE and ``LIKE`` is case-sensitive, so
     the pattern must be uppercased to match. ``"castle"`` → ``"'%CASTLE%'"``.

@@ -37,6 +37,7 @@ Legacy → new test name mapping (spec preservation):
 
 import http.client
 import json
+from email.message import Message
 
 import pytest
 import urllib.error
@@ -215,6 +216,31 @@ def test_non_retryable_status_raises_immediately(no_sleep, monkeypatch):
         client.query(LAYER, "1=1")
     assert state["calls"] == 1  # no retries for a 400
     assert no_sleep == []
+
+
+def test_non_retryable_urllib_httperror_raises_immediately(no_sleep, monkeypatch):
+    headers = Message()
+    state = install_fake_urlopen(monkeypatch, [
+        urllib.error.HTTPError("https://hes.example", 400, "Bad Request", headers, None),
+        urllib.error.HTTPError("https://hes.example", 400, "Bad Request", headers, None),
+    ])
+    client = HesClient()
+    with pytest.raises(HesError, match="HTTP 400"):
+        client.query(LAYER, "1=1")
+    assert state["calls"] == 1
+    assert no_sleep == []
+
+
+def test_retryable_urllib_httperror_uses_ladder(no_sleep, monkeypatch):
+    headers = Message()
+    state = install_fake_urlopen(monkeypatch, [
+        urllib.error.HTTPError("https://hes.example", 503, "Unavailable", headers, None),
+        (200, {"count": 5}),
+    ])
+    client = HesClient()
+    assert client.count(LAYER, "1=1") == 5
+    assert state["calls"] == 2
+    assert no_sleep == [1.0]
 
 
 # ---------------------------------------------------------------------------

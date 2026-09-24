@@ -378,6 +378,12 @@ class HesClient:
                 _sleep(BACKOFF_BASE * attempt)  # 1s, 2s
             try:
                 response = _urlopen(url, self._timeout)
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                if status in RETRYABLE_STATUS:
+                    last_error = HesError(f"HES returned HTTP {status}")
+                    continue
+                raise HesError(f"HES request failed with HTTP {status}") from exc
             except (urllib.error.URLError, OSError, TimeoutError) as exc:
                 last_error = exc
                 continue
