@@ -187,7 +187,12 @@ def bng_to_wgs84(easting: float, northing: float) -> tuple[float, float]:
 
     Returns:
         A ``(lat, lon)`` tuple in decimal degrees (WGS84).
+
+    Raises:
+        ValueError: If either coordinate is NaN or infinite.
     """
+    if not math.isfinite(easting) or not math.isfinite(northing):
+        raise ValueError("BNG coordinates must be finite")
     lat, lon, height = _bng_to_osgb36_latlon(easting, northing)
     lat_w, lon_w = _helmert_osgb36_to_wgs84(lat, lon, height)
     return math.degrees(lat_w), math.degrees(lon_w)
@@ -226,19 +231,17 @@ def enrich_with_latlon(attributes: dict[str, Any]) -> dict[str, Any]:
 
 
 def _urlopen(url: str, timeout: float = DEFAULT_TIMEOUT):
-    """Module-level urllib seam — monkeypatch this in T08.
+    """Open *url* and read the complete response through the urllib seam.
 
-    §5 seam conversion (R1): folds the R1 family (TimeoutError,
-    http.client.HTTPException, ConnectionResetError) into URLError so the ladder
-    catches them. Documented R2 deviation: http.client.RemoteDisconnected IS an
-    OSError (⊂ ConnectionError) so it is already ladder-retried; this seam also
-    converts HTTPException siblings → URLError, so the port retries some protocol
-    errors legacy did NOT retry. User-visible outcome is friendly-text parity
-    either way (exhaustion or fold → "Error: …").
+    ``urllib.request.urlopen`` can raise before returning, while a truncated
+    response can raise :class:`http.client.IncompleteRead` later from ``read``.
+    Keeping both operations here makes every HTTPException a URLError before the
+    retry ladder sees it.
     """
     request = Request(url, headers={"User-Agent": UA})
     try:
-        return urllib.request.urlopen(request, timeout=timeout)
+        response = urllib.request.urlopen(request, timeout=timeout)
+        return response.getcode(), response.read()
     except (TimeoutError, http.client.HTTPException, ConnectionResetError) as e:
         raise urllib.error.URLError(e) from e
 
@@ -321,9 +324,12 @@ class HesClient:
 
         data = self._fetch_with_retries(path, params)
 
+        if not isinstance(data, dict):
+            raise HesError("HES returned invalid JSON: expected a JSON object")
+
         # ArcGIS returns HTTP 200 with an error body for some failures (e.g.
         # invalid where clauses / unsupported pagination).
-        if isinstance(data, dict) and "error" in data:
+        if "error" in data:
             err = data["error"]
             code = err.get("code")
             message = err.get("message", "unknown error")
@@ -377,7 +383,7 @@ class HesClient:
             if attempt > 0:
                 _sleep(BACKOFF_BASE * attempt)  # 1s, 2s
             try:
-                response = _urlopen(url, self._timeout)
+                status, body = _urlopen(url, self._timeout)
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 if status in RETRYABLE_STATUS:
@@ -388,7 +394,6 @@ class HesClient:
                 last_error = exc
                 continue
 
-            status = response.getcode()
             if status in RETRYABLE_STATUS:
                 last_error = HesError(f"HES returned HTTP {status}")
                 continue
@@ -396,7 +401,6 @@ class HesClient:
             if status != 200:
                 raise HesError(f"HES request failed with HTTP {status}")
 
-            body = response.read()
             try:
                 return json.loads(body)
             except (ValueError, json.JSONDecodeError) as exc:

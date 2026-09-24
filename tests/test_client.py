@@ -37,6 +37,7 @@ Legacy → new test name mapping (spec preservation):
 
 import http.client
 import json
+import math
 from email.message import Message
 
 import pytest
@@ -62,8 +63,9 @@ LAYER = "CANMORE/Canmore_Points/MapServer/0"
 class FakeResponse:
     """Minimal stand-in for the object returned by ``urllib.request.urlopen``."""
 
-    def __init__(self, status, body):
+    def __init__(self, status, body, read_error=None):
         self._status = status
+        self._read_error = read_error
         if isinstance(body, bytes):
             self._body = body
         elif isinstance(body, str):
@@ -75,6 +77,8 @@ class FakeResponse:
         return self._status
 
     def read(self):
+        if self._read_error is not None:
+            raise self._read_error
         return self._body
 
 
@@ -83,7 +87,7 @@ def install_fake_urlopen(monkeypatch, responses):
 
     Each item in *responses* is either:
     - an ``Exception`` instance → the fake raises it
-    - a ``(status, json_body)`` tuple → the fake returns a ``FakeResponse``
+    - a ``(status, json_body)`` tuple → returns the normalized ``_urlopen`` tuple
 
     Returns a mutable ``state`` dict with:
     - ``state["calls"]`` — total number of times the fake was invoked
@@ -105,7 +109,7 @@ def install_fake_urlopen(monkeypatch, responses):
             raise resp
         if isinstance(resp, tuple) and len(resp) == 2:
             status, json_body = resp
-            return FakeResponse(status, json_body)
+            return status, FakeResponse(status, json_body).read()
         raise TypeError(f"Bad canned response: {resp!r}")
 
     monkeypatch.setattr(client_mod, "_urlopen", fake_urlopen)
@@ -243,6 +247,58 @@ def test_retryable_urllib_httperror_uses_ladder(no_sleep, monkeypatch):
     assert no_sleep == [1.0]
 
 
+def test_read_stage_incomplete_read_is_normalized_and_retried(
+    no_sleep, monkeypatch
+):
+    responses = [
+        FakeResponse(
+            200,
+            b"",
+            read_error=http.client.IncompleteRead(b'{"count": ', 10),
+        ),
+        (200, {"count": 7}),
+    ]
+    call_count = {"n": 0}
+
+    def fake_inner_urlopen(*args, **kwargs):
+        response = responses[call_count["n"]]
+        call_count["n"] += 1
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, FakeResponse):
+            return response
+        status, json_body = response
+        return FakeResponse(status, json_body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_inner_urlopen)
+
+    assert HesClient().count(LAYER, "1=1") == 7
+    assert call_count["n"] == 2
+    assert no_sleep == [1.0]
+
+
+def test_read_stage_incomplete_read_exhausts_to_hes_error(
+    no_sleep, monkeypatch
+):
+    response = FakeResponse(
+        200,
+        b"",
+        read_error=http.client.IncompleteRead(b'{"count": ', 10),
+    )
+    call_count = {"n": 0}
+
+    def fake_inner_urlopen(*args, **kwargs):
+        call_count["n"] += 1
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_inner_urlopen)
+
+    with pytest.raises(HesError, match="unavailable after"):
+        HesClient().count(LAYER, "1=1")
+    assert call_count["n"] == 3
+    assert no_sleep == [1.0, 2.0]
+
+
 # ---------------------------------------------------------------------------
 # fetch_features
 # ---------------------------------------------------------------------------
@@ -303,6 +359,27 @@ def test_arcgis_error_body_raises(no_sleep, monkeypatch):
         client.query(LAYER, "1=1")
 
 
+@pytest.mark.parametrize("payload", [b"[]", b'"unexpected"', b"null", b"7"])
+def test_non_object_json_is_rejected(no_sleep, monkeypatch, payload):
+    install_fake_urlopen(monkeypatch, [(200, payload)])
+    with pytest.raises(HesError, match="JSON object"):
+        HesClient().query(LAYER, "1=1")
+
+
+@pytest.mark.parametrize("payload", [b"[]", b'"unexpected"', b"null", b"7"])
+def test_count_rejects_non_object_json(no_sleep, monkeypatch, payload):
+    install_fake_urlopen(monkeypatch, [(200, payload)])
+    with pytest.raises(HesError, match="JSON object"):
+        HesClient().count(LAYER, "1=1")
+
+
+@pytest.mark.parametrize("payload", [b"[]", b'"unexpected"', b"null", b"7"])
+def test_fetch_features_rejects_non_object_json(no_sleep, monkeypatch, payload):
+    install_fake_urlopen(monkeypatch, [(200, payload)])
+    with pytest.raises(HesError, match="JSON object"):
+        HesClient().fetch_features(LAYER, "1=1")
+
+
 # ---------------------------------------------------------------------------
 # BNG -> WGS84 conversion (sync pure, copy verbatim)
 # ---------------------------------------------------------------------------
@@ -325,6 +402,36 @@ def test_bng_to_wgs84_second_point():
     lat, lon = bng_to_wgs84(216671, 771712)
     assert lat == pytest.approx(56.7969, abs=0.01)
     assert lon == pytest.approx(-5.0037, abs=0.01)
+
+
+@pytest.mark.parametrize(
+    "easting,northing",
+    [
+        (math.nan, 673497),
+        (325112, math.nan),
+        (math.inf, 673497),
+        (325112, -math.inf),
+    ],
+)
+def test_bng_to_wgs84_rejects_non_finite_coordinates(easting, northing):
+    with pytest.raises(ValueError, match="finite"):
+        bng_to_wgs84(easting, northing)
+
+
+@pytest.mark.parametrize(
+    "easting,northing",
+    [
+        (math.nan, 673497),
+        (325112, math.nan),
+        (math.inf, 673497),
+        (325112, -math.inf),
+    ],
+)
+def test_enrich_ignores_non_finite_coordinates(easting, northing):
+    attributes = {"XCOORD": easting, "YCOORD": northing}
+    assert enrich_with_latlon(attributes) == attributes
+    assert "lat" not in attributes
+    assert "lon" not in attributes
 
 
 # ---------------------------------------------------------------------------

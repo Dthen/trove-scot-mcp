@@ -33,7 +33,7 @@ def install_fake_urlopen(monkeypatch, responses):
 
     Each item in *responses* is either:
     - an ``Exception`` instance -> the fake raises it
-    - a ``(status, json_body)`` tuple -> returns a ``FakeResponse``
+    - a ``(status, json_body)`` tuple -> returns the normalized ``_urlopen`` tuple
 
     Returns a mutable ``state`` dict with:
     - ``state["calls"]`` -- total number of times the fake was invoked
@@ -55,7 +55,7 @@ def install_fake_urlopen(monkeypatch, responses):
             raise resp
         if isinstance(resp, tuple) and len(resp) == 2:
             status, json_body = resp
-            return FakeResponse(status, json_body)
+            return status, FakeResponse(status, json_body).read()
         raise TypeError(f"Bad canned response: {resp!r}")
 
     monkeypatch.setattr(client_mod, "_urlopen", fake_urlopen)
