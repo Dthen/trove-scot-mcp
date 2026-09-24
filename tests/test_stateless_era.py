@@ -49,6 +49,32 @@ def spawn():
     )
 
 
+def _close_pipe(pipe):
+    """Close one subprocess pipe without masking the test's outcome."""
+    if pipe is not None:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def cleanup_process(p):
+    """Close stdin, reap the child, and close stdout/stderr on every path."""
+    try:
+        _close_pipe(p.stdin)
+        if p.poll() is None:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
+    finally:
+        try:
+            _close_pipe(p.stdout)
+        finally:
+            _close_pipe(p.stderr)
+
+
 def send(p, obj):
     """Send a JSON-RPC request to the server."""
     line = json.dumps(obj) + "\n"
@@ -89,8 +115,7 @@ def test_discover_era_shape():
         assert resp["result"]["ttlMs"] == 0, "§2: ttlMs"
         assert resp["result"]["cacheScope"] == "private", "§2: cacheScope"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_discover_paramless():
@@ -105,8 +130,7 @@ def test_discover_paramless():
         assert resp["result"]["ttlMs"] == 0, "§2: ttlMs"
         assert resp["result"]["cacheScope"] == "private", "§2: cacheScope"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_initialize_returns_32601_and_never_hangs_or_closes():
@@ -122,8 +146,7 @@ def test_initialize_returns_32601_and_never_hangs_or_closes():
         assert resp2 is not None, "§3: discover after initialize timed out"
         assert resp2["result"]["supportedVersions"] == ["2026-07-28"], "§3: supportedVersions"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_notifications_initialized_swallowed():
@@ -138,8 +161,7 @@ def test_notifications_initialized_swallowed():
         assert resp["id"] == 42, "§6: reply must carry tools/list id, not a notification response"
         assert "result" in resp, "§6: tools/list must return a result"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_list_triple_and_no_output_schema():
@@ -154,8 +176,7 @@ def test_tools_list_triple_and_no_output_schema():
         for tool in resp["result"]["tools"]:
             assert "outputSchema" not in tool, f"§4: tool {tool['name']} must not have outputSchema"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_list_golden_byte_identity():
@@ -175,8 +196,7 @@ def test_tools_list_golden_byte_identity():
                 f"§4: tool {g['name']} not byte-identical to golden"
             )
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_call_shortcut_error_is_text():
@@ -196,8 +216,7 @@ def test_tools_call_shortcut_error_is_text():
         # R3: isError NOT asserted here (legacy fastmcp did not set isError for in-band error strings)
         assert resp["result"].get("isError", False) is False, "§5: isError must be absent or false"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_call_radius_error_is_text():
@@ -215,8 +234,7 @@ def test_tools_call_radius_error_is_text():
         assert resp["result"]["ttlMs"] == 0, "§5: ttlMs"
         assert resp["result"]["cacheScope"] == "private", "§5: cacheScope"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_call_unknown_tool():
@@ -235,8 +253,7 @@ def test_tools_call_unknown_tool():
         assert resp["result"]["ttlMs"] == 0, "§5: ttlMs"
         assert resp["result"]["cacheScope"] == "private", "§5: cacheScope"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_tools_call_missing_params_is_32602():
@@ -252,8 +269,7 @@ def test_tools_call_missing_params_is_32602():
         assert resp2 is not None, "§5: tools/call (empty params) timed out"
         assert resp2["error"]["code"] == -32602, "§5: empty params → -32602"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 @pytest.mark.parametrize(
@@ -300,9 +316,7 @@ def test_malformed_tool_arguments_return_validation_error_and_keep_server_alive(
         assert alive["result"] == {}
         assert p.poll() is None
     finally:
-        p.stdin.close()
-        if p.poll() is None:
-            p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_ping_answers_empty():
@@ -313,8 +327,7 @@ def test_ping_answers_empty():
         assert resp is not None, "§6: ping timed out"
         assert resp["result"] == {}, "§6: ping result must be empty dict"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_unknown_method_32601():
@@ -326,8 +339,7 @@ def test_unknown_method_32601():
         assert resp["error"]["code"] == -32601, "§3: unknown method → -32601"
         assert resp["id"] == 13, "§3: id echoed"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 # --- 5 regression tests ---
@@ -344,8 +356,7 @@ def test_id_less_unknown_is_silent():
         assert resp is not None, "§1: discover after id-less timed out"
         assert resp["id"] == 14, "§1: reply must carry discover id, not a phantom response"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 @pytest.mark.parametrize(
@@ -371,8 +382,7 @@ def test_id_less_known_methods_are_silent(method):
         assert p.poll() is None
     finally:
         assert p.stdin is not None
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_explicit_null_id_known_method_preserves_response():
@@ -385,8 +395,7 @@ def test_explicit_null_id_known_method_preserves_response():
         assert resp["result"] == {}
     finally:
         assert p.stdin is not None
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_non_dict_json_lines_do_not_kill_the_server():
@@ -404,8 +413,7 @@ def test_non_dict_json_lines_do_not_kill_the_server():
         assert resp["result"] == {}, "§1: ping result must be empty dict"
         assert p.poll() is None, "§1: server must still be alive"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_non_string_method_routes_as_unknown():
@@ -418,8 +426,7 @@ def test_non_string_method_routes_as_unknown():
         assert resp["id"] == 9, "§1: id echoed"
         assert p.poll() is None, "§1: server must still be alive"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_garbage_lines_do_not_kill_the_server():
@@ -437,8 +444,7 @@ def test_garbage_lines_do_not_kill_the_server():
         assert "result" in resp, "§7: tools/list must return a result"
         assert p.poll() is None, "§7: server must still be alive"
     finally:
-        p.stdin.close()
-        p.wait(timeout=5)
+        cleanup_process(p)
 
 
 def test_binary_garbage_line_does_not_kill_the_server():
@@ -484,6 +490,4 @@ def test_binary_garbage_line_does_not_kill_the_server():
         p.stdin.close()
         assert p.wait(timeout=5) == 0  # clean EOF exit
     finally:
-        if p.poll() is None:
-            p.kill()
-            p.wait()
+        cleanup_process(p)
