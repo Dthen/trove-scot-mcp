@@ -13,7 +13,7 @@ The task-specific T00–T13 files and the repository's post-migration history we
 - Corrective implementation commit: `1e75c0e2aa6242f08b8b452974d038c3cb2fc42c` (`trove-scot-mcp: validate string arguments at dispatch`)
 - Corrective handoff HEAD: the final evidence commit (exact object recorded in the kanban completion metadata), targeted by local `v0.3.0`
 - `origin/main`: `2676d49dc76081c8a9b4a557f291b2cbf234d8b4`
-- Origin delta at final verification: 0 behind, 27 ahead
+- Origin delta at final verification: 0 behind, 28 ahead
 - `v0.3.0`: lightweight local tag whose ref object is a commit; it points at the exact corrective handoff HEAD above
 - `pre-migration/20260914`: preserved lightweight tag at `692af2a48109865926d924e00455027fe9752bd2`
 - External mutation: none. No push, remote mutation, gateway/live-config edit, or environment rebuild.
@@ -100,7 +100,7 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
 
 7. Repository/tag audit:
 
-   - `origin/main` is an ancestor of local `main`; the final delta is 0 behind, 27 ahead, with no merge commits added in the corrective lane.
+   - `origin/main` is an ancestor of local `main`; the final delta is 0 behind, 28 ahead, with no merge commits added in the corrective lane.
    - `pre-migration/20260914` still resolves to `692af2a48109865926d924e00455027fe9752bd2` and has object type `commit`.
    - The local `v0.3.0` tag is lightweight (`git cat-file -t v0.3.0` => `commit`) and resolves to the exact final clean HEAD.
    - Working tree is clean after the corrective handoff commit and tag reconciliation.
