@@ -10,7 +10,7 @@ The task-specific T00–T13 files and the repository's post-migration history we
 
 - Repository: `/home/kimbo/projects/trove-scot-mcp`
 - Branch: `main`
-- Corrective handoff HEAD: `1e75c0e2aa6242f08b8b452974d038c3cb2fc42c` (`trove-scot-mcp: validate string arguments at dispatch`), recorded in the kanban completion metadata and targeted by local `v0.3.0`
+- Corrective handoff HEAD: `e467642` (`trove-scot-mcp: record string validation evidence`), whose parent `1e75c0e` contains the implementation; this final evidence commit is recorded in the kanban completion metadata and targeted by local `v0.3.0`
 - `origin/main`: `2676d49dc76081c8a9b4a557f291b2cbf234d8b4`
 - Origin delta at final verification: 0 behind, 22 ahead
 - `v0.3.0`: lightweight local tag whose ref object is a commit; it points at the exact corrective handoff HEAD above
