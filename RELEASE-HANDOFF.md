@@ -10,9 +10,9 @@ The task-specific T00–T13 files and the repository's post-migration history we
 
 - Repository: `/home/kimbo/projects/trove-scot-mcp`
 - Branch: `main`
-- Corrective handoff HEAD: the final corrective handoff commit; its exact object ID is recorded in the kanban completion metadata and is the target of local `v0.3.0`
+- Corrective handoff HEAD: `1e75c0e2aa6242f08b8b452974d038c3cb2fc42c` (`trove-scot-mcp: validate string arguments at dispatch`), recorded in the kanban completion metadata and targeted by local `v0.3.0`
 - `origin/main`: `2676d49dc76081c8a9b4a557f291b2cbf234d8b4`
-- Origin delta at final verification: 0 behind, 20 ahead
+- Origin delta at final verification: 0 behind, 22 ahead
 - `v0.3.0`: lightweight local tag whose ref object is a commit; it points at the exact corrective handoff HEAD above
 - `pre-migration/20260914`: preserved lightweight tag at `692af2a48109865926d924e00455027fe9752bd2`
 - External mutation: none. No push, remote mutation, gateway/live-config edit, or environment rebuild.
@@ -54,20 +54,20 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
 
    `/mnt/HC_Volume_105667182/kimbo/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q -W error::DeprecationWarning`
 
-   Result after the corrective commits: 167 passed, 0 skipped, 0 warnings (4.24 seconds).
+   Result after the corrective commits: 182 passed, 0 skipped, 0 warnings (6.17 seconds).
 
 2. Tight reviewer-blocker regressions:
 
-   - Protocol suite: 30 passed, including eight malformed/missing/non-object tools/call variants, id-less discover/list/call/ping silence, and explicit null-id preservation.
+   - Protocol suite: 45 passed, including wrong-typed required/optional string arguments across all seven tools, id-less discover/list/call/ping silence, and explicit null-id preservation.
    - Client suite: 52 passed, including read-stage `IncompleteRead` retry/exhaustion, list/string/null/number JSON shapes, and NaN/infinity coordinate validation/enrichment.
    - Tool/server/encoder suites: 84 passed.
 
 3. Truly isolated fresh no-hardlink clone:
 
-   - Cloned locally into `/tmp/trove-scot-isolated.7M7NZA/clone` with `git clone --no-hardlinks`.
-   - Source and clone client/server files have matching SHA-256 values but different inodes and link counts of one.
-   - `PYTHONPATH=<clone>/src` full suite: 167 passed, 0 skipped, 0 warnings (4.61 seconds).
-   - Isolated client fixture suite: 52 passed; isolated era/protocol suite: 30 passed.
+   - Cloned locally into a temporary `/tmp/trove-scot-isolated.*` directory with `git clone --no-hardlinks`.
+   - Source and clone `server.py` had matching committed HEADs but different device/inode identities and link counts of one.
+   - `PYTHONPATH=<clone>/src` full suite: 182 passed, 0 skipped, 0 warnings (6.20 seconds).
+   - Isolated protocol suite: 45 passed.
    - The clone remote was only the source checkout; no network or push occurred. The fixture was removed after verification.
 
 4. Local protocol/transport/error/coordinates probe:
@@ -81,13 +81,14 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
    - real truncated loopback response: retried once then returned count 7, with recorded sleep `[1.0]`;
    - non-object loopback JSON: normalized to `HesError`;
    - non-finite coordinates: `ValueError`;
-   - real `urllib.error.HTTPError` instance: status 400.
+   - real `urllib.error.HTTPError` instance: status 400;
+   - no `ResourceWarning` under `python -W error`; protocol child stdout/stderr pipes are closed after the child is reaped.
 
 5. Both scratch Hermes probes through the v2 interpreter:
 
    - Auto config omitted `protocol`; stdout contained one `✓ Connected` and one `✓ Tools discovered: 7`; all seven named tools were listed.
    - Stateless config set `protocol: stateless`; stdout contained the same exact counts and seven names.
-   - Scratch `HERMES_HOME` trees were under `/tmp/trove-scot-probes.PUFcWJkO`; the real `~/.hermes/config.yaml` was not modified.
+   - Scratch `HERMES_HOME` trees were `/tmp/trove-scot-probe-auto` and `/tmp/trove-scot-probe-stateless`; the real `~/.hermes/config.yaml` was not modified.
 
 6. Packaging/runtime audit:
 
@@ -98,7 +99,7 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
 
 7. Repository/tag audit:
 
-   - `origin/main` is an ancestor of local `main`; the final delta is 0 behind, 20 ahead, with no merge commits added in the corrective lane.
+   - `origin/main` is an ancestor of local `main`; the final delta is 0 behind, 22 ahead, with no merge commits added in the corrective lane.
    - `pre-migration/20260914` still resolves to `692af2a48109865926d924e00455027fe9752bd2` and has object type `commit`.
    - The local `v0.3.0` tag is lightweight (`git cat-file -t v0.3.0` => `commit`) and resolves to the exact final clean HEAD.
    - Working tree is clean after the corrective handoff commit and tag reconciliation.
