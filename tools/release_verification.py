@@ -55,6 +55,32 @@ def request_lines(process: subprocess.Popen[bytes]) -> None:
     process.stdin.flush()
 
 
+def _close_pipe(pipe) -> None:
+    """Close one subprocess pipe without masking the probe's outcome."""
+    if pipe is not None:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def cleanup_process(process: subprocess.Popen[bytes]) -> None:
+    """Close stdin, reap the child, and close stdout/stderr on every path."""
+    try:
+        _close_pipe(process.stdin)
+        if process.poll() is None:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    finally:
+        try:
+            _close_pipe(process.stdout)
+        finally:
+            _close_pipe(process.stderr)
+
+
 def read_line(process: subprocess.Popen[bytes], timeout: float = 5.0) -> dict[str, Any]:
     assert process.stdout is not None
     readable, _, _ = select.select([process.stdout], [], [], timeout)
@@ -82,7 +108,10 @@ def protocol_probe() -> dict[str, Any]:
     finally:
         assert process.stdin is not None
         process.stdin.close()
-        require(process.wait(timeout=5) == 0, "server did not exit cleanly on EOF")
+        try:
+            require(process.wait(timeout=5) == 0, "server did not exit cleanly on EOF")
+        finally:
+            cleanup_process(process)
     return {"notification_guard": "pass", "ping": "pass", "eof_rc": 0}
 
 

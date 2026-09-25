@@ -30,7 +30,7 @@ import json
 import math
 import sys
 import urllib.error
-from typing import Any, cast
+from typing import Any
 
 from trove_scot_mcp.client import HesClient, HesError, enrich_with_latlon
 
@@ -926,6 +926,22 @@ def _coerce_argument(key: str, value: Any, converter):
         raise ValueError(f"{key!r}: {exc}") from exc
 
 
+def _string_argument(key: str, value: Any, *, allow_none: bool = True) -> str | None:
+    """Validate a frozen-schema string argument before dispatching a handler.
+
+    The frozen schemas are intentionally not used as a runtime validator.  Keep
+    this seam explicit so a client sending a number, list, or object for a
+    string field gets a tool-level validation result instead of reaching a
+    handler and raising an unrelated attribute error.
+    """
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str):
+        expected = "string or null" if allow_none else "string"
+        raise ValueError(f"{key!r} must be a {expected}, got {type(value).__name__}")
+    return value
+
+
 def handle_call(name, arguments):
     if not isinstance(arguments, dict):
         return {"error": "Invalid arguments: arguments must be an object"}
@@ -935,10 +951,10 @@ def handle_call(name, arguments):
             if "term" not in arguments:
                 return {"error": "Invalid arguments: missing required argument 'term'"}
             return search_heritage(
-                term=cast(str, arguments.get("term")),
-                sitetype=cast(str, arguments.get("sitetype")) if arguments.get("sitetype") is not None else None,
-                council=cast(str, arguments.get("council")) if arguments.get("council") is not None else None,
-                broadclass=cast(str, arguments.get("broadclass")) if arguments.get("broadclass") is not None else None,
+                term=_string_argument("term", arguments.get("term"), allow_none=False),
+                sitetype=_string_argument("sitetype", arguments.get("sitetype")),
+                council=_string_argument("council", arguments.get("council")),
+                broadclass=_string_argument("broadclass", arguments.get("broadclass")),
                 limit=_coerce_argument("limit", arguments.get("limit", 50), int),
             )
         if name == "get_heritage_by_id":
@@ -951,9 +967,9 @@ def handle_call(name, arguments):
             )
         if name == "count_heritage":
             return count_heritage(
-                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
-                sitetype=cast(str, arguments.get("sitetype")) if arguments.get("sitetype") is not None else None,
-                council=cast(str, arguments.get("council")) if arguments.get("council") is not None else None,
+                term=_string_argument("term", arguments.get("term")),
+                sitetype=_string_argument("sitetype", arguments.get("sitetype")),
+                council=_string_argument("council", arguments.get("council")),
             )
         if name == "heritage_near":
             missing = [key for key in ("lat", "lon") if key not in arguments]
@@ -966,26 +982,26 @@ def handle_call(name, arguments):
                 radius_km=_coerce_argument(
                     "radius_km", arguments.get("radius_km", 1.0), float
                 ),
-                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                term=_string_argument("term", arguments.get("term")),
                 limit=_coerce_argument("limit", arguments.get("limit", 50), int),
             )
         if name == "search_listed_buildings":
             return search_listed_buildings(
-                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
-                category=cast(str, arguments.get("category")) if arguments.get("category") is not None else None,
-                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
+                term=_string_argument("term", arguments.get("term")),
+                category=_string_argument("category", arguments.get("category")),
+                local_authority=_string_argument("local_authority", arguments.get("local_authority")),
                 limit=_coerce_argument("limit", arguments.get("limit", 50), int),
             )
         if name == "search_scheduled_monuments":
             return search_scheduled_monuments(
-                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
-                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
+                term=_string_argument("term", arguments.get("term")),
+                local_authority=_string_argument("local_authority", arguments.get("local_authority")),
                 limit=_coerce_argument("limit", arguments.get("limit", 50), int),
             )
         if name == "list_properties_in_care":
             return list_properties_in_care(
-                local_authority=cast(str, arguments.get("local_authority")) if arguments.get("local_authority") is not None else None,
-                term=cast(str, arguments.get("term")) if arguments.get("term") is not None else None,
+                local_authority=_string_argument("local_authority", arguments.get("local_authority")),
+                term=_string_argument("term", arguments.get("term")),
                 limit=_coerce_argument(
                     "limit", arguments.get("limit", 100), int
                 ),
