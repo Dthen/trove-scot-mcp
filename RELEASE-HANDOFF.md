@@ -55,7 +55,7 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
 
    `/mnt/HC_Volume_105667182/kimbo/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q -W error::DeprecationWarning`
 
-   Result after the corrective commits: 182 passed, 0 skipped, 0 warnings (6.17 seconds).
+   Result after the corrective commits: 182 passed, 0 skipped, 0 warnings (5.31 seconds).
 
 2. Tight reviewer-blocker regressions:
 
@@ -67,7 +67,7 @@ The independent review at failed card `t_a103e101` reproduced five correctness b
 
    - Cloned locally into a temporary `/tmp/trove-scot-isolated.*` directory with `git clone --no-hardlinks`.
    - Source and clone `server.py` had matching committed HEADs but different device/inode identities and link counts of one.
-   - `PYTHONPATH=<clone>/src` full suite: 182 passed, 0 skipped, 0 warnings (6.20 seconds).
+   - `PYTHONPATH=<clone>/src` full suite: 182 passed, 0 skipped, 0 warnings (5.76 seconds).
    - Isolated protocol suite: 45 passed.
    - The clone remote was only the source checkout; no network or push occurred. The fixture was removed after verification.
 
