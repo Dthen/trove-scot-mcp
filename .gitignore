@@ -8,3 +8,10 @@ dist/
 build/
 golden/*
 !golden/*.json
+
+# Machine-local interpreter pointers (tests/tools resolve these; never tracked)
+.prod_py
+.prod_py.old
+
+# Internal agent/migration plans (kept out of the repo)
+.hermes/

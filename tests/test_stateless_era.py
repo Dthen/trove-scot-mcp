@@ -10,13 +10,33 @@ import os
 import select
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 # --- Module constants (REFERENCE §7 pinned-v2-production-spawn pattern) ---
-PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/trove-scot-mcp-v2/bin/python3"
+REPO = Path(__file__).resolve().parents[1]  # parent of tests/ — resolved from __file__, never CWD
+
+
+def _prod_py() -> str:
+    """Resolve the production (v2, zero-dependency) interpreter path."""
+    env = os.environ.get("PROD_PY") or os.environ.get("PROD_PY_TROVE_SCOT")
+    if env:
+        return env
+    local = REPO / ".prod_py"  # gitignored, untracked, machine-local
+    if local.is_file():
+        return local.read_text().strip()
+    raise RuntimeError(
+        "Production interpreter not configured. Set $PROD_PY, or write the path to "
+        f"{local} (gitignored). Tests must not fall back to sys.executable: the suite "
+        "interpreter still carries fastmcp 3.4.7 while the server under test must be the "
+        "zero-dependency v2 interpreter, so that fallback would substitute the wrong "
+        "interpreter and make the zero-deps/stateless gates vacuous."
+    )
+
+
+PROD_PY = _prod_py()
 SERVER_ARGS = ["-m", "trove_scot_mcp.server"]
-REPO = "/home/kimbo/projects/trove-scot-mcp"
 
 # Golden file path resolved from __file__ (loaded unconditionally — no skipif)
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "..", "golden", "trove-scot.tools.json")

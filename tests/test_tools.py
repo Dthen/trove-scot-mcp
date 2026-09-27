@@ -85,7 +85,7 @@ from trove_scot_mcp.server import (
     search_scheduled_monuments,
 )
 
-# Edinburgh Castle's BNG coords (from RESEARCH-ARCGIS.md) -> ~55.95, -3.20.
+# Edinburgh Castle's BNG coords -> ~55.95, -3.20.
 EDINBURGH_CASTLE = {
     "CANMOREID": 52068,
     "NMRSNAME": "EDINBURGH CASTLE",

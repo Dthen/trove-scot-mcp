@@ -13,7 +13,7 @@ operation with:
   the API's ``XCOORD``/``YCOORD`` (and ``X``/``Y`` on designation layers) are
   OSGB36 eastings/northings, **not** lat/lon.
 
-Server quirks (see RESEARCH-ARCGIS.md): pagination is unsupported
+Server quirks: pagination is unsupported
 (``resultRecordCount``/``resultOffset`` → HTTP 400) and results silently cap at
 ``maxRecordCount`` — so callers should count before fetching. Text data is
 UPPERCASE and ``LIKE`` is case-sensitive; wrap columns in ``UPPER()``.

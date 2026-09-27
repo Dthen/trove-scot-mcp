@@ -23,10 +23,25 @@ from typing import Any
 from urllib.error import HTTPError
 
 REPO = Path(__file__).resolve().parents[1]
-PROD_PY = Path(
-    "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/"
-    "trove-scot-mcp-v2/bin/python3"
-)
+
+
+def _prod_py() -> Path:
+    """Resolve the production (v2, zero-dependency) interpreter path."""
+    env = os.environ.get("PROD_PY") or os.environ.get("PROD_PY_TROVE_SCOT")
+    if env:
+        return Path(env)
+    local = REPO / ".prod_py"  # gitignored, untracked, machine-local
+    if local.is_file():
+        return Path(local.read_text().strip())
+    raise RuntimeError(
+        "Production interpreter not configured. Set $PROD_PY, or write the path to "
+        f"{local} (gitignored). This probe must not fall back to sys.executable: the "
+        "server under test must be the zero-dependency v2 interpreter, so that "
+        "fallback would substitute the wrong interpreter and make the gate vacuous."
+    )
+
+
+PROD_PY = _prod_py()
 sys.path.insert(0, str(REPO / "src"))
 
 from trove_scot_mcp.client import (  # noqa: E402

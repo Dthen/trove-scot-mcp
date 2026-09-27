@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """trove-scot-mcp: stateless 2026-07-28 era MCP server (stdio loop).
 
-REFERENCE §1–§3, §4 (TOOLS literal), §6–§7 copied verbatim from
-/home/kimbo/.hermes/plans/mcp-2x-migration/REFERENCE.md per PLAN D1
+REFERENCE §1–§3, §4 (TOOLS literal), §6–§7 copied verbatim from the
+project's internal migration REFERENCE spec per plan decision D1
 ("copied from REFERENCE.md, never re-derived"). §5 (tools/call handler
 bodies) lands in T07 — the dispatch here owns only the -32602 params
 guard (F6) and routes every call to a placeholder.
@@ -15,7 +15,7 @@ monuments, listed buildings, archaeological sites) plus designation layers
 These tools query the Canmore layer (Scotland's National Record of the
 Historic Environment, NRHE) via :class:`trove_scot_mcp.client.HesClient`.
 
-Server quirks handled here (see RESEARCH-ARCGIS.md):
+Server quirks handled here:
 - Text data is UPPERCASE and ``LIKE`` is case-sensitive, so every text filter
   wraps the column in ``UPPER()`` and uppercases the search term.
 - There is NO pagination; results silently cap at 1000. We always count first

@@ -7,7 +7,32 @@ Paths derived from __file__, so script works regardless of cwd.
 """
 import json, os, subprocess, sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PYO = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/trove-scot-mcp/bin/python3"
+
+
+def _prod_py_old() -> str:
+    """Resolve the PRE-FLIP (legacy, non-v2) interpreter this capture tool targets.
+
+    Deliberately a separate seam from the v2 production interpreter: this tool
+    captures the frozen golden from the legacy server, so it must never be
+    silently repointed at the migrated v2 venv.
+    """
+    env = os.environ.get("PROD_PY_TROVE_SCOT_OLD")
+    if env:
+        return env
+    local = os.path.join(REPO, ".prod_py.old")  # gitignored, untracked, machine-local
+    if os.path.isfile(local):
+        with open(local, encoding="utf-8") as fh:
+            return fh.read().strip()
+    raise RuntimeError(
+        "Legacy (pre-flip) interpreter not configured. Set $PROD_PY_TROVE_SCOT_OLD, or "
+        f"write the path to {local} (gitignored). This tool captures the frozen golden from "
+        "the legacy server, so it deliberately does not fall back to the v2 production "
+        "interpreter or to sys.executable."
+    )
+
+
+PYO = _prod_py_old()
+
 def rpc(p, obj):
     p.stdin.write(json.dumps(obj) + "\n"); p.stdin.flush(); return p.stdout.readline()
 def main():
